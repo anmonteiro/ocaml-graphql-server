@@ -48,6 +48,17 @@ let user = Schema.(obj "user"
   ])
 )
 
+let user_stream, push_to_user_stream = Lwt_stream.create ()
+
+let rec consume_user_stream () =
+  try Lwt_stream.next user_stream
+      >>= (fun x ->
+        if Lwt_stream.is_closed user_stream then
+          Lwt.return_unit
+        else
+          consume_user_stream ())
+  with | Lwt_stream.Closed | Lwt_stream.Empty -> Lwt.return_unit
+
 let schema = Schema.(schema [
     io_field "users"
       ~args:Arg.[]
@@ -67,8 +78,20 @@ let schema = Schema.(schema [
       )
     ;
   ]
+  ~subscriptions:[
+      subscription_field "subscribe_to_user"
+        ~typ:(non_null user)
+        ~args:Arg.[arg' "intarg" ~typ:int ~default:42]
+        ~resolve:(fun () _payload -> alice)
+        ~subscribe:(fun () () _intarg -> Lwt_io.eprintf "Subscribe called\n"; user_stream)
+    ]
 )
+
+let _ = Lwt.async(fun () -> consume_user_stream ())
 
 let () =
   Server.start ~ctx:(fun req -> ()) schema
   |> Lwt_main.run
+
+
+

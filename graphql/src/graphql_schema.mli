@@ -8,5 +8,12 @@ module type IO = sig
   val bind : 'a t -> ('a -> 'b t) -> 'b t
 end
 
+(* IO Stream *)
+module type IO_stream = sig
+  type 'a t
+end
+
 (* GraphQL schema functor *)
-module Make(Io : IO) : Graphql_intf.Schema with type 'a io = 'a Io.t
+module Make (Io : IO) (Io_stream : IO_stream) :
+  Graphql_intf.Schema with type 'a io = 'a Io.t
+                      and type 'a io_stream = 'a Io_stream.t

@@ -3,4 +3,4 @@ module Schema = Graphql_schema.Make(struct
 
   let bind x f = f x
   let return x = x
-end)
+end) (struct type 'a t = 'a end)

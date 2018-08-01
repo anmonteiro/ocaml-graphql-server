@@ -1,6 +1,6 @@
 open Graphql
 
-module Schema = Graphql_schema.Make(Lwt)
+module Schema = Graphql_schema.Make (Lwt) (Lwt_stream)
 
 module Server = struct
   module C = Cohttp_lwt_unix

@@ -1,12 +1,15 @@
 (** GraphQL schema signature *)
 module type Schema = sig
   type +'a io
+  type 'a io_stream
 
   (** {3 Base types } *)
 
   type 'ctx schema
 
   type ('ctx, 'src) field
+
+  type ('ctx, 'src) subscription_field
 
   type ('ctx, 'src) typ
 
@@ -16,6 +19,8 @@ module type Schema = sig
 
   val schema : ?mutation_name:string ->
                ?mutations:('ctx, unit) field list ->
+               ?subscription_name:string ->
+               ?subscriptions:('ctx, unit) subscription_field list ->
                ?query_name:string ->
                ('ctx, unit) field list ->
                'ctx schema
@@ -87,6 +92,15 @@ module type Schema = sig
               args:('a, 'b) Arg.arg_list ->
               resolve:('ctx -> 'src -> 'b) ->
               ('ctx, 'src) field
+
+  val subscription_field : ?doc:string ->
+                           ?deprecated:deprecated ->
+                           string ->
+                           typ:('ctx, 'out) typ ->
+                           args:('a, 'b) Arg.arg_list ->
+                           resolve:('ctx -> 'out -> 'out) ->
+                           subscribe:('ctx -> 'src -> 'b) ->
+                           ('ctx, 'src) subscription_field
 
   val io_field : ?doc:string ->
                  ?deprecated:deprecated ->
