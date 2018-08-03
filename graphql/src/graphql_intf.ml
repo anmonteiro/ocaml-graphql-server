@@ -44,9 +44,9 @@ module type Schema = sig
     type _ arg
     type _ arg_typ
 
-    type (_, _) arg_list =
-      | [] : ('a, 'a) arg_list
-      | (::) : 'a arg * ('b, 'c) arg_list -> ('b, 'a -> 'c) arg_list
+    type (_, _, _, _) arg_list =
+      | [] : ('a, 'a, 'b, 'b) arg_list
+      | (::) : 'a arg * ('b, 'c, 'd, 'e) arg_list -> ('b, 'a -> 'c, 'd, 'a -> 'e) arg_list
 
     val arg : ?doc:string ->
               string ->
@@ -71,7 +71,7 @@ module type Schema = sig
 
     val obj : ?doc:string ->
               string ->
-              fields:('a, 'b) arg_list ->
+              fields:('a, 'b, 'a, 'b) arg_list ->
               coerce:'b ->
               'a option arg_typ
 
@@ -89,7 +89,7 @@ module type Schema = sig
               ?deprecated:deprecated ->
               string ->
               typ:('ctx, 'a) typ ->
-              args:('a, 'b) Arg.arg_list ->
+              args:('a, 'b, 'a, 'b) Arg.arg_list ->
               resolve:('ctx -> 'src -> 'b) ->
               ('ctx, 'src) field
 
@@ -97,16 +97,18 @@ module type Schema = sig
                            ?deprecated:deprecated ->
                            string ->
                            typ:('ctx, 'out) typ ->
-                           args:('a, 'b) Arg.arg_list ->
-                           resolve:('ctx -> 'out -> 'out) ->
-                           subscribe:('ctx -> 'src -> 'b) ->
+                           args:((Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
+                                 'args, 'out, 'rargs) Arg.arg_list ->
+                           resolve:('ctx -> 'out -> 'rargs) ->
+                           subscribe:('ctx -> ('out io_stream -> (Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream) ->
+                             'src -> 'args) ->
                            ('ctx, 'src) subscription_field
 
   val io_field : ?doc:string ->
                  ?deprecated:deprecated ->
                  string ->
                  typ:('ctx, 'a) typ ->
-                 args:(('a, string) result io, 'b) Arg.arg_list ->
+                 args:(('a, string) result io, 'b, ('a, string) result io, 'b) Arg.arg_list ->
                  resolve:('ctx -> 'src -> 'b) ->
                  ('ctx, 'src) field
 
@@ -136,7 +138,7 @@ module type Schema = sig
                        ?deprecated:deprecated ->
                        string ->
                        typ:(_, 'a) typ ->
-                       args:('a, _) Arg.arg_list ->
+                       args:('a, 'b, 'a, 'b) Arg.arg_list ->
                        abstract_field
 
   val interface : ?doc:string ->
