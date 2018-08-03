@@ -95,13 +95,13 @@ module type Schema = sig
 
   val subscription_field : ?doc:string ->
                            ?deprecated:deprecated ->
+                           ?resolve:('ctx -> 'out -> 'rargs) ->
                            string ->
                            typ:('ctx, 'out) typ ->
                            args:('out, 'rargs,
-                                 (Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
+                                 (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
                                  'args) Arg.arg_list ->
-                           resolve:('ctx -> 'out -> 'rargs) ->
-                           subscribe:('ctx -> ('out io_stream -> (Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream) ->
+                           subscribe:('ctx -> ('out io_stream -> (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream) ->
                              'src -> 'args) ->
                            ('ctx, 'src) subscription_field
 

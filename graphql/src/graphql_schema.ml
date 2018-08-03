@@ -410,12 +410,11 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
       args       : ('out, 'rargs,
-                    (Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
+                    (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
                     'args) Arg.arg_list;
-      (* TODO: make this optional *)
-      resolve    : 'ctx -> 'out -> 'rargs;
+      resolve    : ('ctx -> 'out -> 'rargs) option;
       subscribe  : 'ctx ->
-                   ('out io_stream -> (Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream)  ->
+                   ('out io_stream -> (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream)  ->
                      'src -> 'args;
     } -> ('ctx, 'src) subscription_field
   and ('ctx, 'src) subscription_obj = {
@@ -478,7 +477,7 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
     AbstractField (Field { lift = Io.ok; name; doc; deprecated; typ; args; resolve = Obj.magic () })
 
   (* TODO: we also want a subscription_field' for resolvers that return 'a Io.t *)
-  let subscription_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args ~resolve ~subscribe =
+  let subscription_field ?doc ?(deprecated=NotDeprecated) ?resolve name ~typ ~args ~subscribe =
     SubscriptionField { name; doc; deprecated; typ; args; resolve; subscribe }
 
   let enum ?doc name ~values =
@@ -1156,6 +1155,9 @@ end
     | Serial -> Io.map_s ~memo:[]
     | Parallel -> Io.map_p
 
+  let error_to_json err =
+    `Assoc ["message", `String err]
+
   let rec present : type ctx src. ctx execution_context -> src -> Graphql_parser.field -> (ctx, src) typ -> (Yojson.Basic.json * string list, [`Argument_error of string | `Resolve_error of string]) result Io.t =
     fun ctx src query_field typ ->
       match typ with
@@ -1230,19 +1232,29 @@ end
     fun ctx src obj ({name} as field) ->
       match field_from_subscription_object obj name with
         | Some (SubscriptionField subs_field) ->
-            let source_stream = (fun user_stream ->
+            let source_stream_to_response_stream = (fun source_stream ->
               Io_stream.map_s
-              (fun user ->
-                let resolver = subs_field.resolve ctx.ctx user in
-                match Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver with
+              (fun value ->
+                let resolved_value = begin match subs_field.resolve with
+                | None -> Ok value
+                | Some resolve_fn ->
+                    let resolver = resolve_fn ctx.ctx value in
+                    Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver
+                end in
+                match resolved_value with
                 | Ok resolved ->
-                  (* TODO: this needs to return JSON with they subscription key, and errors *)
                   present ctx resolved field subs_field.typ
+                  |> Io.Result.map ~f:(fun res ->
+                      match res with
+                      | (data, []) -> (`Assoc ["data", `Assoc [name, data]])
+                      | (data, errors) ->
+                          let errors = List.map error_to_json errors in
+                          (`Assoc [ "data", `Assoc [name, data]; "errors", `List errors ]))
                 | Error err ->
                   Io.error (`Argument_error err))
-              user_stream)
+              source_stream)
             in
-            let subscriber = subs_field.subscribe ctx.ctx source_stream src in
+            let subscriber = subs_field.subscribe ctx.ctx source_stream_to_response_stream src in
             begin match Arg.eval_subscription_arglist ctx.variables subs_field.args field.arguments subscriber with
             | Ok source_stream ->
                 Io.ok (`Assoc [(alias_or_name field, `Null)], [])
@@ -1344,9 +1356,6 @@ end
           Ok (List.find_exn (fun op -> op.Graphql_parser.name = Some name) ops)
         with Not_found ->
           Error `Operation_not_found
-
-  let error_to_json err =
-    `Assoc ["message", `String err]
 
   let error_response err =
     `Assoc [
