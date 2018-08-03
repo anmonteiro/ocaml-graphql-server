@@ -409,8 +409,9 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
       doc        : string option;
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
-      args       : ((Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
-                    'args, 'out, 'rargs) Arg.arg_list;
+      args       : ('out, 'rargs,
+                    (Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
+                    'args) Arg.arg_list;
       (* TODO: make this optional *)
       resolve    : 'ctx -> 'out -> 'rargs;
       subscribe  : 'ctx ->
@@ -1233,7 +1234,7 @@ end
               Io_stream.map_s
               (fun user ->
                 let resolver = subs_field.resolve ctx.ctx user in
-                match Arg.eval_subscription_arglist ctx.variables subs_field.args field.arguments resolver with
+                match Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver with
                 | Ok resolved ->
                   (* TODO: this needs to return JSON with they subscription key, and errors *)
                   present ctx resolved field subs_field.typ
@@ -1242,7 +1243,7 @@ end
               user_stream)
             in
             let subscriber = subs_field.subscribe ctx.ctx source_stream src in
-            begin match Arg.eval_arglist ctx.variables subs_field.args field.arguments subscriber with
+            begin match Arg.eval_subscription_arglist ctx.variables subs_field.args field.arguments subscriber with
             | Ok source_stream ->
                 Io.ok (`Assoc [(alias_or_name field, `Null)], [])
 						| Error err -> Io.error (`Argument_error err)

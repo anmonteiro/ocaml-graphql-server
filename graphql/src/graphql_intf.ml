@@ -97,8 +97,9 @@ module type Schema = sig
                            ?deprecated:deprecated ->
                            string ->
                            typ:('ctx, 'out) typ ->
-                           args:((Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
-                                 'args, 'out, 'rargs) Arg.arg_list ->
+                           args:('out, 'rargs,
+                                 (Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
+                                 'args) Arg.arg_list ->
                            resolve:('ctx -> 'out -> 'rargs) ->
                            subscribe:('ctx -> ('out io_stream -> (Yojson.Basic.json * string list, [ `Argument_error of string | `Resolve_error of string ]) result io_stream) ->
                              'src -> 'args) ->
