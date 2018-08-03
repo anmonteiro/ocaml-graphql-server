@@ -409,13 +409,14 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
       doc        : string option;
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
-      args       : ('out, 'rargs,
+      args       : ('a, 'rargs,
                     (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
                     'args) Arg.arg_list;
       resolve    : ('ctx -> 'out -> 'rargs) option;
       subscribe  : 'ctx ->
                    ('out io_stream -> (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream)  ->
                      'src -> 'args;
+      lift       : 'a -> ('out, string) result Io.t;
     } -> ('ctx, 'src) subscription_field
   and ('ctx, 'src) subscription_obj = {
     name   : string;
@@ -476,9 +477,11 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
   let abstract_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args =
     AbstractField (Field { lift = Io.ok; name; doc; deprecated; typ; args; resolve = Obj.magic () })
 
-  (* TODO: we also want a subscription_field' for resolvers that return 'a Io.t *)
   let subscription_field ?doc ?(deprecated=NotDeprecated) ?resolve name ~typ ~args ~subscribe =
-    SubscriptionField { name; doc; deprecated; typ; args; resolve; subscribe }
+    SubscriptionField { name; doc; deprecated; typ; args; resolve; subscribe; lift = Io.ok }
+
+  let subscription_io_field ?doc ?(deprecated=NotDeprecated) ?resolve name ~typ ~args ~subscribe =
+    SubscriptionField { name; doc; deprecated; typ; args; resolve; subscribe; lift = id }
 
   let enum ?doc name ~values =
     Enum { name; doc; values }
@@ -1230,28 +1233,32 @@ end
 
   let resolve_subscription : type ctx src. ctx execution_context -> src -> (ctx, src) subscription_obj -> Graphql_parser.field -> (Yojson.Basic.json * string list, [`Argument_error of string | `Resolve_error of string]) result Io.t =
     fun ctx src obj ({name} as field) ->
+      let open Io.Infix in
       match field_from_subscription_object obj name with
         | Some (SubscriptionField subs_field) ->
             let source_stream_to_response_stream = (fun source_stream ->
               Io_stream.map_s
               (fun value ->
                 let resolved_value = begin match subs_field.resolve with
-                | None -> Ok value
+                | None -> Io.ok value
                 | Some resolve_fn ->
                     let resolver = resolve_fn ctx.ctx value in
-                    Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver
-                end in
-                match resolved_value with
-                | Ok resolved ->
-                  present ctx resolved field subs_field.typ
-                  |> Io.Result.map ~f:(fun res ->
-                      match res with
+                    begin match Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver with
+                    | Ok unlifted_value ->
+                          subs_field.lift unlifted_value
+                          |> Io.Result.map_error ~f:(fun err -> `Resolve_error err)
+                    | Error err -> Io.error (`Argument_error err)
+                    end
+                end
+          in
+          resolved_value >>=? fun resolved ->
+            present ctx resolved field subs_field.typ
+                    |> Io.Result.map ~f:(fun res ->
+                        match res with
                       | (data, []) -> (`Assoc ["data", `Assoc [name, data]])
                       | (data, errors) ->
                           let errors = List.map error_to_json errors in
-                          (`Assoc [ "data", `Assoc [name, data]; "errors", `List errors ]))
-                | Error err ->
-                  Io.error (`Argument_error err))
+                          (`Assoc [ "data", `Assoc [name, data]; "errors", `List errors ])))
               source_stream)
             in
             let subscriber = subs_field.subscribe ctx.ctx source_stream_to_response_stream src in

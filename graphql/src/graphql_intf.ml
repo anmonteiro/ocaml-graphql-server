@@ -93,6 +93,14 @@ module type Schema = sig
               resolve:('ctx -> 'src -> 'b) ->
               ('ctx, 'src) field
 
+  val io_field : ?doc:string ->
+                 ?deprecated:deprecated ->
+                 string ->
+                 typ:('ctx, 'a) typ ->
+                 args:(('a, string) result io, 'b, ('a, string) result io, 'b) Arg.arg_list ->
+                 resolve:('ctx -> 'src -> 'b) ->
+                 ('ctx, 'src) field
+
   val subscription_field : ?doc:string ->
                            ?deprecated:deprecated ->
                            ?resolve:('ctx -> 'out -> 'rargs) ->
@@ -105,13 +113,17 @@ module type Schema = sig
                              'src -> 'args) ->
                            ('ctx, 'src) subscription_field
 
-  val io_field : ?doc:string ->
-                 ?deprecated:deprecated ->
-                 string ->
-                 typ:('ctx, 'a) typ ->
-                 args:(('a, string) result io, 'b, ('a, string) result io, 'b) Arg.arg_list ->
-                 resolve:('ctx -> 'src -> 'b) ->
-                 ('ctx, 'src) field
+  val subscription_io_field : ?doc:string ->
+                              ?deprecated:deprecated ->
+                              ?resolve:('ctx -> 'out -> 'rargs) ->
+                              string ->
+                              typ:('ctx, 'out) typ ->
+                              args:(('out, string) result io ,'rargs,
+                                    (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
+                                    'args) Arg.arg_list ->
+                              subscribe:('ctx -> ('out io_stream -> (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream) ->
+                                'src -> 'args) ->
+                              ('ctx, 'src) subscription_field
 
   val enum : ?doc:string ->
              string ->
