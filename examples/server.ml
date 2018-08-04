@@ -97,25 +97,16 @@ let schema = Schema.(schema [
       subscription_field "subscribe_to_user"
         ~typ:(non_null user)
         ~args:Arg.[arg' "intarg" ~typ:int ~default:42]
-        (* The `resolve` function in subscriptions can be used to transform the
-         * subscription payload. In this example we ignore the payload and always
-         * return `alice` *)
-        ~resolve:(fun () _payload _intarg -> alice)
-        ~subscribe:(fun ctx () source_stream_to_response_stream _intarg ->
-          Printf.eprintf "Subscribe called\n%!";
+        ~subscribe:(fun _ctx () _intarg ->
           let user_stream, push_to_user_stream = Lwt_stream.create () in
-          let response_stream = source_stream_to_response_stream user_stream in
           set_interval 2 (fun () ->
             push_to_user_stream (Some bob))
           (fun () -> push_to_user_stream None);
-         let _ = Lwt.async(fun () -> consume_stream response_stream) in
-          response_stream)
+          user_stream)
     ]
 )
 
 let () =
   Server.start ~ctx:(fun req -> ()) schema
   |> Lwt_main.run
-
-
 

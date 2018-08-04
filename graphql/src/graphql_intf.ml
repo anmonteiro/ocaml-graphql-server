@@ -44,9 +44,9 @@ module type Schema = sig
     type _ arg
     type _ arg_typ
 
-    type (_, _, _, _) arg_list =
-      | [] : ('a, 'a, 'b, 'b) arg_list
-      | (::) : 'a arg * ('b, 'c, 'd, 'e) arg_list -> ('b, 'a -> 'c, 'd, 'a -> 'e) arg_list
+    type (_, _) arg_list =
+      | [] : ('a, 'a) arg_list
+      | (::) : 'a arg * ('b, 'c) arg_list -> ('b, 'a -> 'c) arg_list
 
     val arg : ?doc:string ->
               string ->
@@ -71,7 +71,7 @@ module type Schema = sig
 
     val obj : ?doc:string ->
               string ->
-              fields:('a, 'b, 'a, 'b) arg_list ->
+              fields:('a, 'b) arg_list ->
               coerce:'b ->
               'a option arg_typ
 
@@ -89,7 +89,7 @@ module type Schema = sig
               ?deprecated:deprecated ->
               string ->
               typ:('ctx, 'a) typ ->
-              args:('a, 'b, 'a, 'b) Arg.arg_list ->
+              args:('a, 'b) Arg.arg_list ->
               resolve:('ctx -> 'src -> 'b) ->
               ('ctx, 'src) field
 
@@ -97,37 +97,17 @@ module type Schema = sig
                  ?deprecated:deprecated ->
                  string ->
                  typ:('ctx, 'a) typ ->
-                 args:(('a, string) result io, 'b, ('a, string) result io, 'b) Arg.arg_list ->
+                 args:(('a, string) result io, 'b) Arg.arg_list ->
                  resolve:('ctx -> 'src -> 'b) ->
                  ('ctx, 'src) field
 
   val subscription_field : ?doc:string ->
                            ?deprecated:deprecated ->
-                           ?resolve:('ctx -> 'out -> 'rargs) ->
                            string ->
                            typ:('ctx, 'out) typ ->
-                           args:('out, 'rargs,
-                                 (Yojson.Basic.json, Yojson.Basic.json) result io_stream,
-                                 'args) Arg.arg_list ->
-                           subscribe:('ctx -> 'src ->
-                                      ('out io_stream ->
-                                       (Yojson.Basic.json, Yojson.Basic.json) result io_stream) ->
-                                      'args) ->
+                           args:('out io_stream, 'args) Arg.arg_list ->
+                           subscribe:('ctx -> 'src -> 'args) ->
                            ('ctx, 'src) subscription_field
-
-  val subscription_io_field : ?doc:string ->
-                              ?deprecated:deprecated ->
-                              ?resolve:('ctx -> 'out -> 'rargs) ->
-                              string ->
-                              typ:('ctx, 'out) typ ->
-                              args:(('out, string) result io ,'rargs,
-                                    (Yojson.Basic.json, Yojson.Basic.json) result io_stream,
-                                    'args) Arg.arg_list ->
-                              subscribe:('ctx -> 'src ->
-                                         ('out io_stream ->
-                                          (Yojson.Basic.json, Yojson.Basic.json) result io_stream) ->
-                                         'args) ->
-                              ('ctx, 'src) subscription_field
 
   val enum : ?doc:string ->
              string ->
@@ -155,7 +135,7 @@ module type Schema = sig
                        ?deprecated:deprecated ->
                        string ->
                        typ:(_, 'a) typ ->
-                       args:('a, 'b, 'a, 'b) Arg.arg_list ->
+                       args:('a, 'b) Arg.arg_list ->
                        abstract_field
 
   val interface : ?doc:string ->
@@ -178,7 +158,7 @@ module type Schema = sig
   type variables = (string * Graphql_parser.const_value) list
 
   type execute_operation =
-    [ `Single of Yojson.Basic.json
+    [ `Response of Yojson.Basic.json
     | `Stream of (Yojson.Basic.json, Yojson.Basic.json) result io_stream]
 
   val execute : 'ctx schema -> 'ctx -> ?variables:variables -> ?operation_name:string -> Graphql_parser.document -> (execute_operation, Yojson.Basic.json) result io

@@ -12,7 +12,7 @@ let test_query schema ctx ?variables ?operation_name query expected =
   | Error err -> failwith err
   | Ok doc ->
       let result = match Graphql.Schema.execute schema ctx ?variables ?operation_name doc with
-      | Ok data -> data
+      | Ok (`Response data) -> data
       | Error err -> err
       in
       Alcotest.check yojson "invalid execution result" expected result

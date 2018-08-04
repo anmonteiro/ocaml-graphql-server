@@ -17,7 +17,7 @@ let test_query schema ctx query expected =
     | Ok doc ->
       Graphql_lwt.Schema.execute schema ctx doc >|= fun result ->
       let result' = match result with
-      | Ok data -> data
+      | Ok (`Response data) -> data
       | Error err -> err
       in
       Alcotest.check yojson "invalid execution result" expected result'

@@ -122,7 +122,7 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
       | Object : {
           name   : string;
           doc    : string option;
-          fields : ('a, 'b, 'a, 'b) arg_list;
+          fields : ('a, 'b) arg_list;
           coerce : 'b;
         } -> 'a option arg_typ
       | Enum : {
@@ -144,9 +144,9 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
           typ : 'a option arg_typ;
           default : 'a;
         } -> 'a arg
-    and (_, _, _, _) arg_list =
-      | [] : ('a, 'a, 'b, 'b) arg_list
-      | (::) : 'a arg * ('b, 'c, 'd, 'e) arg_list -> ('b, 'a -> 'c, 'd, 'a -> 'e) arg_list
+    and (_, _) arg_list =
+      | [] : ('a, 'a) arg_list
+      | (::) : 'a arg * ('b, 'c) arg_list -> ('b, 'a -> 'c) arg_list
 
     let arg ?doc name ~typ =
       Arg { name; doc; typ }
@@ -222,7 +222,7 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
         let props' = List.map (fun (name, value) -> name, value_to_const_value variable_map value) props in
         `Assoc props'
 
-    let rec eval_arglist : type a b c d. variable_map -> (a, b, c, d) arg_list -> (string * Graphql_parser.value) list -> b -> (a, string) result =
+    let rec eval_arglist : type a b. variable_map -> (a, b) arg_list -> (string * Graphql_parser.value) list -> b -> (a, string) result =
       fun variable_map arglist key_values f ->
         match arglist with
         | [] -> Ok f
@@ -240,7 +240,7 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
               eval_arglist variable_map arglist' key_values (f coerced)
             with StringMap.Missing_key key -> Error (Format.sprintf "Missing variable `%s`" key)
 
-    and eval_arg : type a. variable_map ->  a arg_typ -> Graphql_parser.const_value option -> (a, string) result = fun variable_map typ value ->
+    and eval_arg : type a. variable_map -> a arg_typ -> Graphql_parser.const_value option -> (a, string) result = fun variable_map typ value ->
       match (typ, value) with
       | NonNullable _, None -> Error "Missing required argument"
       | NonNullable _, Some `Null -> Error "Missing required argument"
@@ -286,72 +286,6 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
               end
           | _ -> Error "Expected enum"
           end
-
-    let rec eval_subscription_arglist : type a b c d. variable_map -> (a, b, c, d) arg_list -> (string * Graphql_parser.value) list -> d -> (c, string) result =
-      fun variable_map arglist key_values f ->
-        match arglist with
-        | [] -> Ok f
-        | (DefaultArg arg)::arglist' ->
-            let arglist'' = (Arg { name = arg.name; doc = arg.doc; typ = arg.typ })::arglist' in
-            eval_subscription_arglist variable_map arglist'' key_values (function
-              | None -> f arg.default
-              | Some value -> f value
-            )
-        | (Arg arg)::arglist' ->
-            try
-              let value = List.assoc arg.name key_values in
-              let const_value = Option.map value ~f:(value_to_const_value variable_map) in
-              eval_subscription_arg variable_map arg.typ const_value >>= fun coerced ->
-              eval_subscription_arglist variable_map arglist' key_values (f coerced)
-            with StringMap.Missing_key key -> Error (Format.sprintf "Missing variable `%s`" key)
-
-    and eval_subscription_arg : type a. variable_map ->  a arg_typ -> Graphql_parser.const_value option -> (a, string) result = fun variable_map typ value ->
-      match (typ, value) with
-      | NonNullable _, None -> Error "Missing required argument"
-      | NonNullable _, Some `Null -> Error "Missing required argument"
-      | Scalar _, None -> Ok None
-      | Scalar _, Some `Null -> Ok None
-      | Object _, None -> Ok None
-      | Object _, Some `Null -> Ok None
-      | List _, None -> Ok None
-      | List _, Some `Null -> Ok None
-      | Enum _, None -> Ok None
-      | Enum _, Some `Null -> Ok None
-      | Scalar s, Some value ->
-          s.coerce value >>| fun coerced ->
-          Some coerced
-      | Object o, Some value ->
-          begin match value with
-          | `Assoc props ->
-              let props' = (props :> (string * Graphql_parser.value) list) in
-              eval_subscription_arglist variable_map o.fields props' o.coerce >>| fun coerced ->
-              Some coerced
-          | _ -> Error "Expected object"
-          end
-     | List typ, Some value ->
-          begin match value with
-          | `List values ->
-              let option_values = List.map (fun x -> Some x) values in
-              List.Result.all (eval_arg variable_map typ) option_values >>| fun coerced ->
-              Some coerced
-          | value -> eval_subscription_arg variable_map typ (Some value) >>| fun coerced ->
-              (Some [coerced] : a)
-          end
-      | NonNullable typ, value ->
-          eval_subscription_arg variable_map typ value >>= (function
-          | Some value -> Ok value
-          | None -> Error "Missing required argument")
-      | Enum e, Some value ->
-          begin match value with
-          | `Enum v
-          | `String v ->
-              begin match List.find (fun enum_value -> enum_value.name = v) e.values with
-              | Some enum_value -> Ok (Some enum_value.value)
-              | None -> Error "Invalid enum value"
-              end
-          | _ -> Error "Expected enum"
-          end
-
   end
 
   (* Schema data types *)
@@ -379,7 +313,7 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
       doc        : string option;
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
-      args       : ('a, 'args, 'a, 'args) Arg.arg_list;
+      args       : ('a, 'args) Arg.arg_list;
       resolve    : 'ctx -> 'src -> 'args;
       lift       : 'a -> ('out, string) result Io.t;
     } -> ('ctx, 'src) field
@@ -409,15 +343,8 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
       doc        : string option;
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
-      args       : ('a, 'rargs,
-                    (Yojson.Basic.json, Yojson.Basic.json) result io_stream,
-                    'args) Arg.arg_list;
-      resolve    : ('ctx -> 'out -> 'rargs) option;
-      subscribe  : 'ctx -> 'src ->
-                   ('out io_stream ->
-                     (Yojson.Basic.json, Yojson.Basic.json) result io_stream) ->
-                    'args;
-      lift       : 'a -> ('out, string) result Io.t;
+      args       : ('out io_stream, 'args) Arg.arg_list;
+      subscribe  : 'ctx -> 'src -> 'args;
     } -> ('ctx, 'src) subscription_field
   and ('ctx, 'src) subscription_obj = {
     name   : string;
@@ -478,11 +405,8 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
   let abstract_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args =
     AbstractField (Field { lift = Io.ok; name; doc; deprecated; typ; args; resolve = Obj.magic () })
 
-  let subscription_field ?doc ?(deprecated=NotDeprecated) ?resolve name ~typ ~args ~subscribe =
-    SubscriptionField { name; doc; deprecated; typ; args; resolve; subscribe; lift = Io.ok }
-
-  let subscription_io_field ?doc ?(deprecated=NotDeprecated) ?resolve name ~typ ~args ~subscribe =
-    SubscriptionField { name; doc; deprecated; typ; args; resolve; subscribe; lift = id }
+  let subscription_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args ~subscribe =
+    SubscriptionField { name; doc; deprecated; typ; args; subscribe }
 
   let enum ?doc name ~values =
     Enum { name; doc; values }
@@ -613,7 +537,7 @@ module Introspection = struct
           let memo' = (AnyArgTyp obj)::result, StringSet.add o.name visited in
           arg_list_types memo' o.fields
         )
-  and arg_list_types : type a b. (any_typ list * StringSet.t) -> (a, b, a, b) Arg.arg_list -> (any_typ list * StringSet.t) = fun memo arglist ->
+  and arg_list_types : type a b. (any_typ list * StringSet.t) -> (a, b) Arg.arg_list -> (any_typ list * StringSet.t) = fun memo arglist ->
     let open Arg in
     match arglist with
     | [] -> memo
@@ -623,7 +547,7 @@ module Introspection = struct
         | DefaultArg a -> arg_types memo a.typ
         in arg_list_types memo' args
 
-  let rec args_to_list : type a b. ?memo:any_arg list -> (a, b, a, b) Arg.arg_list -> any_arg list = fun ?memo:(memo=[]) arglist ->
+  let rec args_to_list : type a b. ?memo:any_arg list -> (a, b) Arg.arg_list -> any_arg list = fun ?memo:(memo=[]) arglist ->
     let open Arg in
     match arglist with
     | [] ->
@@ -1244,7 +1168,7 @@ end
   ]
 
   type execute_operation =
-    [ `Single of Yojson.Basic.json
+    [ `Response of Yojson.Basic.json
     | `Stream of (Yojson.Basic.json, Yojson.Basic.json) result Io_stream.t]
 
   let data_to_json = function
@@ -1285,34 +1209,17 @@ end
   =
     fun ctx src (SubscriptionField subs_field) field ->
       let open Io.Infix in
-            let source_stream_to_response_stream = (fun source_stream ->
-              Io_stream.map_s
-              (fun value ->
-                let lifted_value = begin match subs_field.resolve with
-                | None -> Io.ok value
-                | Some resolve_fn ->
-                    let resolver = resolve_fn ctx.ctx value in
-                    let lifted = begin match Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver with
-                    | Ok unlifted_value ->
-                          subs_field.lift unlifted_value
-                          |> Io.Result.map_error ~f:(fun err -> `Resolve_error err)
-                    | Error err -> Io.error (`Argument_error err)
-                    end
-                    in lifted >>| to_response
-                end
-                in
-                lifted_value >>=? fun resolved ->
-                  present ctx resolved field subs_field.typ
-                  |> Io.Result.map ~f:(fun (data, errors) ->
-                      (data_to_json (`Assoc [field.name, data], errors)))
-                  >>| to_response)
-              source_stream)
-            in
-            let subscriber = subs_field.subscribe ctx.ctx src source_stream_to_response_stream in
-            begin match Arg.eval_subscription_arglist ctx.variables subs_field.args field.arguments subscriber with
-            | Ok response_stream -> Io.ok response_stream
-						| Error err -> Io.error (`Argument_error err)
-				  end
+      let subscriber = subs_field.subscribe ctx.ctx src in
+      begin match Arg.eval_arglist ctx.variables subs_field.args field.arguments subscriber with
+      | Ok source_stream -> Io.ok (
+          Io_stream.map_s (fun value ->
+              present ctx value field subs_field.typ
+              |> Io.Result.map ~f:(fun (data, errors) ->
+                (data_to_json (`Assoc [field.name, data], errors)))
+              >>| to_response) source_stream
+      )
+      | Error err -> Io.error (`Argument_error err)
+    end
 
   let execute_operation : 'ctx schema -> 'ctx execution_context -> fragment_map -> variable_map -> Graphql_parser.operation -> (execute_operation, [> execute_error]) result Io.t =
     fun schema ctx fragments variables operation ->
@@ -1321,14 +1228,14 @@ end
           let query  = schema.query in
           let fields = collect_fields fragments query operation.selection_set in
           (resolve_fields ctx () query fields : (Yojson.Basic.json * string list, [`Argument_error of string | `Resolve_error of string]) result Io.t :> (Yojson.Basic.json * string list, [> execute_error]) result Io.t)
-          |> Io.Result.map ~f:(fun data_errs -> `Single (data_to_json data_errs))
+          |> Io.Result.map ~f:(fun data_errs -> `Response (data_to_json data_errs))
       | Graphql_parser.Mutation ->
           begin match schema.mutation with
           | None -> Io.error `Mutations_not_configured
           | Some mut ->
               let fields = collect_fields fragments mut operation.selection_set in
               (resolve_fields ~execution_order:Serial ctx () mut fields : (Yojson.Basic.json * string list, [`Argument_error of string | `Resolve_error of string]) result Io.t :> (Yojson.Basic.json * string list, [> execute_error]) result Io.t)
-              |> Io.Result.map ~f:(fun data_errs -> `Single (data_to_json data_errs))
+              |> Io.Result.map ~f:(fun data_errs -> `Response (data_to_json data_errs))
           end
       | Graphql_parser.Subscription ->
           begin match schema.subscription with
@@ -1340,8 +1247,8 @@ end
                    | Some subscription_field ->
                        (subscribe ctx () subscription_field field : ((Yojson.Basic.json, Yojson.Basic.json) result Io_stream.t, [`Argument_error of string | `Resolve_error of string]) result Io.t :> ((Yojson.Basic.json, Yojson.Basic.json) result Io_stream.t, [> execute_error]) result Io.t)
                        |> Io.Result.map ~f:(fun stream -> `Stream stream)
-                   | None -> Io.ok (`Single (`Assoc [(alias_or_name field, `Null)])))
-              (* see http://facebook.github.io/graphql/June2018/#sec-Single-root-field *)
+                   | None -> Io.ok (`Response (`Assoc [(alias_or_name field, `Null)])))
+              (* see http://facebook.github.io/graphql/June2018/#sec-Response-root-field *)
               | _ -> Io.error (`Validation_error "Subscriptions only allow exactly one selection for the operation.")
               end
           end
