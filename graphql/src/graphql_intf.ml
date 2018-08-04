@@ -107,10 +107,12 @@ module type Schema = sig
                            string ->
                            typ:('ctx, 'out) typ ->
                            args:('out, 'rargs,
-                                 (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
+                                 (Yojson.Basic.json, Yojson.Basic.json) result io_stream,
                                  'args) Arg.arg_list ->
-                           subscribe:('ctx -> ('out io_stream -> (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream) ->
-                             'src -> 'args) ->
+                           subscribe:('ctx -> 'src ->
+                                      ('out io_stream ->
+                                       (Yojson.Basic.json, Yojson.Basic.json) result io_stream) ->
+                                      'args) ->
                            ('ctx, 'src) subscription_field
 
   val subscription_io_field : ?doc:string ->
@@ -119,10 +121,12 @@ module type Schema = sig
                               string ->
                               typ:('ctx, 'out) typ ->
                               args:(('out, string) result io ,'rargs,
-                                    (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream,
+                                    (Yojson.Basic.json, Yojson.Basic.json) result io_stream,
                                     'args) Arg.arg_list ->
-                              subscribe:('ctx -> ('out io_stream -> (Yojson.Basic.json, [ `Argument_error of string | `Resolve_error of string ]) result io_stream) ->
-                                'src -> 'args) ->
+                              subscribe:('ctx -> 'src ->
+                                         ('out io_stream ->
+                                          (Yojson.Basic.json, Yojson.Basic.json) result io_stream) ->
+                                         'args) ->
                               ('ctx, 'src) subscription_field
 
   val enum : ?doc:string ->
@@ -173,7 +177,11 @@ module type Schema = sig
 
   type variables = (string * Graphql_parser.const_value) list
 
-  val execute : 'ctx schema -> 'ctx -> ?variables:variables -> ?operation_name:string -> Graphql_parser.document -> (Yojson.Basic.json, Yojson.Basic.json) result io
+  type execute_operation =
+    [ `Single of Yojson.Basic.json
+    | `Stream of (Yojson.Basic.json, Yojson.Basic.json) result io_stream]
+
+  val execute : 'ctx schema -> 'ctx -> ?variables:variables -> ?operation_name:string -> Graphql_parser.document -> (execute_operation, Yojson.Basic.json) result io
   (** [execute schema ctx variables doc] evaluates the [doc] against [schema]
       with the given context [ctx] and [variables]. *)
 end

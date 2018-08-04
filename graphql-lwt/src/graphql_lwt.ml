@@ -32,7 +32,7 @@ module Server = struct
     Lwt_io.printf "Query: %s\n" query;
     let result = execute_query ctx schema (variables :> (string * Graphql_parser.const_value) list) query in
     result >>= function
-    | Ok data ->
+    | Ok (`Single data) ->
         let body = Yojson.Basic.to_string data in
         C.Server.respond_string ~status:`OK ~body ()
     | Error err ->

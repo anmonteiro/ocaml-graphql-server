@@ -51,9 +51,8 @@ let user = Schema.(obj "user"
 let rec consume_stream stream =
   Lwt.catch (fun () ->
     Lwt_stream.next stream >>= fun x ->
-      (match x with
-       | Ok x -> Printf.eprintf "stream response: '%s'\n%!" (Yojson.Basic.to_string x)
-       | Error ((`Argument_error x): [`Argument_error of string | `Resolve_error of string]) -> Printf.eprintf "Error: '%s'\n%!" x);
+      let Ok x | Error x = x in
+      Printf.eprintf "stream response: '%s'\n%!" (Yojson.Basic.to_string x);
     if Lwt_stream.is_closed stream then
       Lwt.return_unit
     else
@@ -102,7 +101,7 @@ let schema = Schema.(schema [
          * subscription payload. In this example we ignore the payload and always
          * return `alice` *)
         ~resolve:(fun () _payload _intarg -> alice)
-        ~subscribe:(fun ctx source_stream_to_response_stream () _intarg ->
+        ~subscribe:(fun ctx () source_stream_to_response_stream _intarg ->
           Printf.eprintf "Subscribe called\n%!";
           let user_stream, push_to_user_stream = Lwt_stream.create () in
           let response_stream = source_stream_to_response_stream user_stream in
