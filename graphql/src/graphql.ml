@@ -5,12 +5,11 @@ module Io = struct
   let return x = x
 end
 
-module Io_stream = struct
+module Stream = struct
   type +'a io = 'a Io.t
-  type 'a t = 'a
+  type 'a t = 'a list
 
-  let map_s f x = f x
+  let map x f = List.map f x
 end
 
-module Schema = Graphql_schema.Make (Io) (Io_stream)
-
+module Schema = Graphql_schema.Make (Io) (Stream)

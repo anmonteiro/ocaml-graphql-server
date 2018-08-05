@@ -97,16 +97,16 @@ let schema = Schema.(schema [
       subscription_field "subscribe_to_user"
         ~typ:(non_null user)
         ~args:Arg.[arg' "intarg" ~typ:int ~default:42]
-        ~subscribe:(fun _ctx () _intarg ->
+        ~subscribe:(fun _ctx _intarg ->
           let user_stream, push_to_user_stream = Lwt_stream.create () in
           set_interval 2 (fun () ->
-            push_to_user_stream (Some bob))
+            let idx = Random.int (List.length users) in
+            push_to_user_stream (Some (List.nth users idx)))
           (fun () -> push_to_user_stream None);
-          user_stream)
+          Ok user_stream)
     ]
 )
 
 let () =
   Server.start ~ctx:(fun req -> ()) schema
   |> Lwt_main.run
-

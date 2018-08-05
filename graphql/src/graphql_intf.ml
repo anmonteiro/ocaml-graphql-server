@@ -1,7 +1,7 @@
 (** GraphQL schema signature *)
 module type Schema = sig
   type +'a io
-  type 'a io_stream
+  type 'a stream
 
   (** {3 Base types } *)
 
@@ -9,7 +9,7 @@ module type Schema = sig
 
   type ('ctx, 'src) field
 
-  type ('ctx, 'src) subscription_field
+  type 'ctx subscription_field
 
   type ('ctx, 'src) typ
 
@@ -20,7 +20,7 @@ module type Schema = sig
   val schema : ?mutation_name:string ->
                ?mutations:('ctx, unit) field list ->
                ?subscription_name:string ->
-               ?subscriptions:('ctx, unit) subscription_field list ->
+               ?subscriptions:'ctx subscription_field list ->
                ?query_name:string ->
                ('ctx, unit) field list ->
                'ctx schema
@@ -105,9 +105,9 @@ module type Schema = sig
                            ?deprecated:deprecated ->
                            string ->
                            typ:('ctx, 'out) typ ->
-                           args:('out io_stream, 'args) Arg.arg_list ->
-                           subscribe:('ctx -> 'src -> 'args) ->
-                           ('ctx, 'src) subscription_field
+                           args:(('out stream, string) result, 'args) Arg.arg_list ->
+                           subscribe:('ctx -> 'args) ->
+                           'ctx subscription_field
 
   val enum : ?doc:string ->
              string ->
@@ -135,7 +135,7 @@ module type Schema = sig
                        ?deprecated:deprecated ->
                        string ->
                        typ:(_, 'a) typ ->
-                       args:('a, 'b) Arg.arg_list ->
+                       args:('a, _) Arg.arg_list ->
                        abstract_field
 
   val interface : ?doc:string ->
@@ -157,11 +157,9 @@ module type Schema = sig
 
   type variables = (string * Graphql_parser.const_value) list
 
-  type execute_operation =
-    [ `Response of Yojson.Basic.json
-    | `Stream of (Yojson.Basic.json, Yojson.Basic.json) result io_stream]
+  type 'a response = ('a, Yojson.Basic.json) result
 
-  val execute : 'ctx schema -> 'ctx -> ?variables:variables -> ?operation_name:string -> Graphql_parser.document -> (execute_operation, Yojson.Basic.json) result io
+  val execute : 'ctx schema -> 'ctx -> ?variables:variables -> ?operation_name:string -> Graphql_parser.document -> [ `Response of Yojson.Basic.json | `Stream of Yojson.Basic.json response stream] response io
   (** [execute schema ctx variables doc] evaluates the [doc] against [schema]
       with the given context [ctx] and [variables]. *)
 end

@@ -1,8 +1,10 @@
 open Graphql
 
 module Schema = Graphql_schema.Make (Lwt) (struct
-  include Lwt_stream
   type 'a io = 'a Lwt.t
+  include Lwt_stream
+
+  let map x f = map_s f x
 end)
 
 module Server = struct

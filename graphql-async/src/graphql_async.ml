@@ -6,5 +6,5 @@ end) (struct
   type +'a io = 'a Async_kernel.Deferred.t
   include Async_kernel.Stream
 
-  let map_s f x = map' ~f x
+  let map x f = map' ~f x
 end)

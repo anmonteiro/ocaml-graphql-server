@@ -33,18 +33,18 @@ module type IO = sig
   val bind : 'a t -> ('a -> 'b t) -> 'b t
 end
 
-(* IO Stream *)
-module type IO_Stream = sig
+(* Stream *)
+module type Stream = sig
   type +'a io
   type 'a t
 
-  val map_s : ('a -> 'b io) -> 'a t -> 'b t
+  val map : 'a t -> ('a -> 'b io) -> 'b t
 end
 
 (* Schema *)
-module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
+module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
   type +'a io = 'a Io.t
-  type 'a io_stream = 'a Io_stream.t
+  type 'a stream = 'a Stream.t
 
   module Io = struct
     include Io
@@ -337,20 +337,21 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
     AbstractField : (_, _) field -> abstract_field
   and ('ctx, 'a) abstract_value =
     AbstractValue : ('ctx, 'src option) typ * 'src -> ('ctx, 'a) abstract_value
-  and (_, _) subscription_field =
+
+  type 'ctx subscription_field =
     SubscriptionField : {
       name       : string;
       doc        : string option;
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
-      args       : ('out io_stream, 'args) Arg.arg_list;
-      subscribe  : 'ctx -> 'src -> 'args;
-    } -> ('ctx, 'src) subscription_field
-  and ('ctx, 'src) subscription_obj = {
+      args       : (('out stream, string) result, 'args) Arg.arg_list;
+      subscribe  : 'ctx -> 'args;
+    } -> 'ctx subscription_field
+
+  type 'ctx subscription_obj = {
     name   : string;
     doc    : string option;
-    fields : ('ctx, 'src) subscription_field list Lazy.t;
-    abstracts : abstract list ref;
+    fields : 'ctx subscription_field list;
   }
 
   type ('ctx, 'a) abstract_typ = ('ctx, ('ctx, 'a) abstract_value option) typ
@@ -358,7 +359,7 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
   type 'ctx schema = {
     query : ('ctx, unit) obj;
     mutation : ('ctx, unit) obj option;
-    subscription : ('ctx, unit) subscription_obj option;
+    subscription : 'ctx subscription_obj option;
   }
 
   let schema ?(mutation_name="mutation")
@@ -381,12 +382,11 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
         fields = lazy fields;
       }
     );
-    subscription = Option.map subscriptions ~f:(fun fields: ('ctx, unit) subscription_obj ->
+    subscription = Option.map subscriptions ~f:(fun fields ->
       {
         name = subscription_name;
         doc = None;
-        abstracts = ref [];
-        fields = lazy fields;
+        fields;
       }
     )
   }
@@ -437,13 +437,13 @@ module Make (Io : IO) (Io_stream: IO_Stream with type 'a io = 'a Io.t) = struct
     | _ ->
         invalid_arg "Arguments must be Interface/Union and Object"
 
-  let obj_of_subscription_obj ({name; doc; abstracts; fields}: ('ctx, 'src) subscription_obj) =
+  let obj_of_subscription_obj {name; doc; fields} =
     let fields = List.map
-      (fun (SubscriptionField { name;doc; deprecated; typ; args; _}) ->
-        Field { lift = Obj.magic (); name; doc; deprecated; typ; args = Obj.magic args; resolve = Obj.magic () })
-      (Lazy.force fields)
+      (fun (SubscriptionField {name; doc; deprecated; typ; args; subscribe}) ->
+        Field { lift = Obj.magic (); name; doc; deprecated; typ; args; resolve = (fun ctx () -> subscribe ctx) })
+      fields
     in
-    { name; doc; abstracts; fields = lazy fields }
+    { name; doc; abstracts = ref []; fields = lazy fields }
 
   (* Built-in scalars *)
   let int : 'ctx. ('ctx, int option) typ = Scalar {
@@ -960,17 +960,15 @@ module Introspection = struct
         args = Arg.[];
         lift = Io.ok;
         resolve = fun _ s ->
-          let query_types, visited = types (Object s.query) in
-          let query_and_mutation_types, visited = match s.mutation with
-          | None -> query_types, visited
-          | Some mut -> types ~memo:(query_types, visited) (Object mut)
+          let types, _ = List.fold_left
+            (fun memo op ->
+              match op with
+              | None -> memo
+              | Some op -> types ~memo (Object op))
+            ([], StringSet.empty)
+            [Some s.query; s.mutation; Option.map s.subscription obj_of_subscription_obj]
           in
-          match s.subscription with
-          | None -> query_and_mutation_types
-          | Some subs ->
-            fst (
-              types ~memo:(query_and_mutation_types, visited) (Object (obj_of_subscription_obj subs))
-            )
+          types
       };
       Field {
         name = "queryType";
@@ -1037,9 +1035,10 @@ end
     ctx       : 'ctx;
   }
 
-  let matches_type_condition type_condition obj =
-    obj.name = type_condition ||
-      List.exists (fun (abstract : abstract) -> abstract.name = type_condition) !(obj.abstracts)
+  let matches_type_condition: string -> ('ctx, 'src) obj -> bool =
+    fun type_condition obj ->
+      obj.name = type_condition ||
+        List.exists (fun (abstract : abstract) -> abstract.name = type_condition) !(obj.abstracts)
 
   let rec collect_fields : fragment_map -> ('ctx, 'src) obj -> Graphql_parser.selection list -> Graphql_parser.field list = fun fragment_map obj fields ->
     List.map (function
@@ -1070,8 +1069,8 @@ end
   let field_from_object : ('ctx, 'src) obj -> string -> ('ctx, 'src) field option = fun obj field_name ->
     List.find (fun (Field field) -> field.name = field_name) (Lazy.force obj.fields)
 
-  let field_from_subscription_object : ('ctx, 'src) subscription_obj -> string -> ('ctx, 'src) subscription_field option = fun obj field_name ->
-    List.find (fun (SubscriptionField field) -> field.name = field_name) (Lazy.force obj.fields)
+  let field_from_subscription_object = fun obj field_name ->
+    List.find (fun (SubscriptionField field) -> field.name = field_name) obj.fields
 
   let coerce_or_null : 'a option -> ('a -> (Yojson.Basic.json * string list, 'b) result Io.t) -> (Yojson.Basic.json * string list, 'b) result Io.t =
     fun src f ->
@@ -1167,9 +1166,7 @@ end
     | `Operation_not_found
   ]
 
-  type execute_operation =
-    [ `Response of Yojson.Basic.json
-    | `Stream of (Yojson.Basic.json, Yojson.Basic.json) result Io_stream.t]
+  type 'a response = ('a, Yojson.Basic.json) result
 
   let data_to_json = function
     | data, [] -> `Assoc ["data", data]
@@ -1205,23 +1202,26 @@ end
         let `Assoc errors = error_response err in
         Error (`Assoc (("data", `Null)::errors))
 
-  let subscribe : type ctx src. ctx execution_context -> src -> (ctx, src) subscription_field -> Graphql_parser.field -> ((Yojson.Basic.json, Yojson.Basic.json) result Io_stream.t, [`Argument_error of string | `Resolve_error of string]) result Io.t
+  let subscribe : type ctx. ctx execution_context -> ctx subscription_field -> Graphql_parser.field -> ((Yojson.Basic.json, Yojson.Basic.json) result Stream.t, [`Argument_error of string | `Resolve_error of string]) result Io.t
   =
-    fun ctx src (SubscriptionField subs_field) field ->
+    fun ctx (SubscriptionField subs_field) field ->
       let open Io.Infix in
-      let subscriber = subs_field.subscribe ctx.ctx src in
-      begin match Arg.eval_arglist ctx.variables subs_field.args field.arguments subscriber with
-      | Ok source_stream -> Io.ok (
-          Io_stream.map_s (fun value ->
-              present ctx value field subs_field.typ
-              |> Io.Result.map ~f:(fun (data, errors) ->
-                (data_to_json (`Assoc [field.name, data], errors)))
-              >>| to_response) source_stream
-      )
+      let subscriber = subs_field.subscribe ctx.ctx in
+      match Arg.eval_arglist ctx.variables subs_field.args field.arguments subscriber with
+      | Ok subscribe_result ->
+          begin match subscribe_result with
+          | Ok source_stream -> Io.ok (
+              Stream.map source_stream (fun value ->
+                present ctx value field subs_field.typ
+                |> Io.Result.map ~f:(fun (data, errors) ->
+                  (data_to_json (`Assoc [(alias_or_name field), data], errors)))
+                >>| to_response)
+            )
+          | Error err -> Io.error (`Resolve_error err)
+          end
       | Error err -> Io.error (`Argument_error err)
-    end
 
-  let execute_operation : 'ctx schema -> 'ctx execution_context -> fragment_map -> variable_map -> Graphql_parser.operation -> (execute_operation, [> execute_error]) result Io.t =
+  let execute_operation : 'ctx schema -> 'ctx execution_context -> fragment_map -> variable_map -> Graphql_parser.operation -> ([ `Response of Yojson.Basic.json | `Stream of Yojson.Basic.json response stream], [> execute_error]) result Io.t =
     fun schema ctx fragments variables operation ->
       match operation.optype with
       | Graphql_parser.Query ->
@@ -1245,7 +1245,7 @@ end
               | [field] ->
                   (match field_from_subscription_object subs field.name with
                    | Some subscription_field ->
-                       (subscribe ctx () subscription_field field : ((Yojson.Basic.json, Yojson.Basic.json) result Io_stream.t, [`Argument_error of string | `Resolve_error of string]) result Io.t :> ((Yojson.Basic.json, Yojson.Basic.json) result Io_stream.t, [> execute_error]) result Io.t)
+                       (subscribe ctx subscription_field field : ((Yojson.Basic.json, Yojson.Basic.json) result Stream.t, [`Argument_error of string | `Resolve_error of string]) result Io.t :> ((Yojson.Basic.json, Yojson.Basic.json) result Stream.t, [> execute_error]) result Io.t)
                        |> Io.Result.map ~f:(fun stream -> `Stream stream)
                    | None -> Io.ok (`Response (`Assoc [(alias_or_name field, `Null)])))
               (* see http://facebook.github.io/graphql/June2018/#sec-Response-root-field *)
