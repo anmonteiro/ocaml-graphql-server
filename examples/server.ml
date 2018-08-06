@@ -97,7 +97,7 @@ let schema = Schema.(schema [
       subscription_field "subscribe_to_user"
         ~typ:(non_null user)
         ~args:Arg.[arg' "intarg" ~typ:int ~default:42]
-        ~subscribe:(fun _ctx _intarg ->
+        ~resolve:(fun _ctx _intarg ->
           let user_stream, push_to_user_stream = Lwt_stream.create () in
           set_interval 2 (fun () ->
             let idx = Random.int (List.length users) in

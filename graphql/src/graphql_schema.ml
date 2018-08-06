@@ -345,7 +345,7 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
       args       : (('out stream, string) result, 'args) Arg.arg_list;
-      subscribe  : 'ctx -> 'args;
+      resolve    : 'ctx -> 'args;
     } -> 'ctx subscription_field
 
   type 'ctx subscription_obj = {
@@ -405,8 +405,8 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
   let abstract_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args =
     AbstractField (Field { lift = Io.ok; name; doc; deprecated; typ; args; resolve = Obj.magic () })
 
-  let subscription_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args ~subscribe =
-    SubscriptionField { name; doc; deprecated; typ; args; subscribe }
+  let subscription_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args ~resolve =
+    SubscriptionField { name; doc; deprecated; typ; args; resolve }
 
   let enum ?doc name ~values =
     Enum { name; doc; values }
@@ -439,8 +439,8 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
 
   let obj_of_subscription_obj {name; doc; fields} =
     let fields = List.map
-      (fun (SubscriptionField {name; doc; deprecated; typ; args; subscribe}) ->
-        Field { lift = Obj.magic (); name; doc; deprecated; typ; args; resolve = (fun ctx () -> subscribe ctx) })
+      (fun (SubscriptionField {name; doc; deprecated; typ; args; resolve}) ->
+        Field { lift = Obj.magic (); name; doc; deprecated; typ; args; resolve = (fun ctx () -> resolve ctx) })
       fields
     in
     { name; doc; abstracts = ref []; fields = lazy fields }
@@ -1206,10 +1206,10 @@ end
   =
     fun ctx (SubscriptionField subs_field) field ->
       let open Io.Infix in
-      let subscriber = subs_field.subscribe ctx.ctx in
-      match Arg.eval_arglist ctx.variables subs_field.args field.arguments subscriber with
-      | Ok subscribe_result ->
-          begin match subscribe_result with
+      let resolver = subs_field.resolve ctx.ctx in
+      match Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver with
+      | Ok field_stream_result ->
+          begin match field_stream_result with
           | Ok source_stream -> Io.ok (
               Stream.map source_stream (fun value ->
                 present ctx value field subs_field.typ

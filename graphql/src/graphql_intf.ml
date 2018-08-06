@@ -106,7 +106,7 @@ module type Schema = sig
                            string ->
                            typ:('ctx, 'out) typ ->
                            args:(('out stream, string) result, 'args) Arg.arg_list ->
-                           subscribe:('ctx -> 'args) ->
+                           resolve:('ctx -> 'args) ->
                            'ctx subscription_field
 
   val enum : ?doc:string ->
