@@ -344,8 +344,9 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
       doc        : string option;
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
-      args       : (('out stream, string) result, 'args) Arg.arg_list;
+      args       : ('a, 'args) Arg.arg_list;
       resolve    : 'ctx -> 'args;
+      lift       : 'a -> ('out stream, string) result io
     } -> 'ctx subscription_field
 
   type 'ctx subscription_obj = {
@@ -406,7 +407,10 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
     AbstractField (Field { lift = Io.ok; name; doc; deprecated; typ; args; resolve = Obj.magic () })
 
   let subscription_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args ~resolve =
-    SubscriptionField { name; doc; deprecated; typ; args; resolve }
+    SubscriptionField { name; doc; deprecated; typ; args; resolve; lift = Io.return }
+
+  let subscription_io_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args ~resolve =
+    SubscriptionField { name; doc; deprecated; typ; args; resolve; lift = id }
 
   let enum ?doc name ~values =
     Enum { name; doc; values }
@@ -439,7 +443,7 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
 
   let obj_of_subscription_obj {name; doc; fields} =
     let fields = List.map
-      (fun (SubscriptionField {name; doc; deprecated; typ; args; resolve}) ->
+      (fun (SubscriptionField {name; doc; deprecated; typ; args; resolve; lift}) ->
         Field { lift = Obj.magic (); name; doc; deprecated; typ; args; resolve = (fun ctx () -> resolve ctx) })
       fields
     in
@@ -1035,8 +1039,7 @@ end
     ctx       : 'ctx;
   }
 
-  let matches_type_condition: string -> ('ctx, 'src) obj -> bool =
-    fun type_condition obj ->
+  let matches_type_condition type_condition (obj : ('ctx, 'src) obj) =
       obj.name = type_condition ||
         List.exists (fun (abstract : abstract) -> abstract.name = type_condition) !(obj.abstracts)
 
@@ -1208,17 +1211,15 @@ end
       let open Io.Infix in
       let resolver = subs_field.resolve ctx.ctx in
       match Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver with
-      | Ok field_stream_result ->
-          begin match field_stream_result with
-          | Ok source_stream -> Io.ok (
+      | Ok unlifted_result ->
+          subs_field.lift unlifted_result
+          |> Io.Result.map ~f:(fun source_stream ->
               Stream.map source_stream (fun value ->
                 present ctx value field subs_field.typ
                 |> Io.Result.map ~f:(fun (data, errors) ->
                   (data_to_json (`Assoc [(alias_or_name field), data], errors)))
-                >>| to_response)
-            )
-          | Error err -> Io.error (`Resolve_error err)
-          end
+                >>| to_response))
+          |> Io.Result.map_error ~f:(fun err -> `Resolve_error err)
       | Error err -> Io.error (`Argument_error err)
 
   let execute_operation : 'ctx schema -> 'ctx execution_context -> fragment_map -> variable_map -> Graphql_parser.operation -> ([ `Response of Yojson.Basic.json | `Stream of Yojson.Basic.json response stream], [> execute_error]) result Io.t =

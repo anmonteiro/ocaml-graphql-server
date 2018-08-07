@@ -1,11 +1,15 @@
 open Graphql
 
-module Schema = Graphql_schema.Make (Lwt) (struct
+module Io = Lwt
+
+module Stream = struct
   type 'a io = 'a Lwt.t
   include Lwt_stream
 
   let map x f = map_s f x
-end)
+end
+
+module Schema = Graphql_schema.Make (Io) (Stream)
 
 module Server = struct
   module C = Cohttp_lwt_unix
