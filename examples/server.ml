@@ -103,7 +103,7 @@ let schema = Schema.(schema [
             let idx = Random.int (List.length users) in
             push_to_user_stream (Some (List.nth users idx)))
           (fun () -> push_to_user_stream None);
-          Ok user_stream)
+          Lwt_result.return user_stream)
     ]
 )
 

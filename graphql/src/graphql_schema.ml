@@ -344,9 +344,8 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
       doc        : string option;
       deprecated : deprecated;
       typ        : ('ctx, 'out) typ;
-      args       : ('a, 'args) Arg.arg_list;
+      args       : (('out stream, string) result io, 'args) Arg.arg_list;
       resolve    : 'ctx -> 'args;
-      lift       : 'a -> ('out stream, string) result io
     } -> 'ctx subscription_field
 
   type 'ctx subscription_obj = {
@@ -407,10 +406,7 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
     AbstractField (Field { lift = Io.ok; name; doc; deprecated; typ; args; resolve = Obj.magic () })
 
   let subscription_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args ~resolve =
-    SubscriptionField { name; doc; deprecated; typ; args; resolve; lift = Io.return }
-
-  let subscription_io_field ?doc ?(deprecated=NotDeprecated) name ~typ ~args ~resolve =
-    SubscriptionField { name; doc; deprecated; typ; args; resolve; lift = id }
+    SubscriptionField { name; doc; deprecated; typ; args; resolve }
 
   let enum ?doc name ~values =
     Enum { name; doc; values }
@@ -443,7 +439,7 @@ module Make (Io : IO) (Stream: Stream with type 'a io = 'a Io.t) = struct
 
   let obj_of_subscription_obj {name; doc; fields} =
     let fields = List.map
-      (fun (SubscriptionField {name; doc; deprecated; typ; args; resolve; lift}) ->
+      (fun (SubscriptionField {name; doc; deprecated; typ; args; resolve}) ->
         Field { lift = Obj.magic (); name; doc; deprecated; typ; args; resolve = (fun ctx () -> resolve ctx) })
       fields
     in
@@ -1040,8 +1036,8 @@ end
   }
 
   let matches_type_condition type_condition (obj : ('ctx, 'src) obj) =
-      obj.name = type_condition ||
-        List.exists (fun (abstract : abstract) -> abstract.name = type_condition) !(obj.abstracts)
+    obj.name = type_condition ||
+      List.exists (fun (abstract : abstract) -> abstract.name = type_condition) !(obj.abstracts)
 
   let rec collect_fields : fragment_map -> ('ctx, 'src) obj -> Graphql_parser.selection list -> Graphql_parser.field list = fun fragment_map obj fields ->
     List.map (function
@@ -1211,8 +1207,8 @@ end
       let open Io.Infix in
       let resolver = subs_field.resolve ctx.ctx in
       match Arg.eval_arglist ctx.variables subs_field.args field.arguments resolver with
-      | Ok unlifted_result ->
-          subs_field.lift unlifted_result
+      | Ok result ->
+          result
           |> Io.Result.map ~f:(fun source_stream ->
               Stream.map source_stream (fun value ->
                 present ctx value field subs_field.typ

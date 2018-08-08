@@ -7,9 +7,9 @@ end
 
 module Stream = struct
   type +'a io = 'a Io.t
-  type 'a t = 'a list
+  type 'a t = 'a Seq.t
 
-  let map x f = List.map f x
+  let map x f = Seq.map f x
 end
 
 module Schema = Graphql_schema.Make (Io) (Stream)

@@ -105,7 +105,7 @@ module type Schema = sig
                            ?deprecated:deprecated ->
                            string ->
                            typ:('ctx, 'out) typ ->
-                           args:(('out stream, string) result, 'args) Arg.arg_list ->
+                           args:(('out stream, string) result io, 'args) Arg.arg_list ->
                            resolve:('ctx -> 'args) ->
                            'ctx subscription_field
 
