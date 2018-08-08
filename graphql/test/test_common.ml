@@ -13,6 +13,12 @@ let test_query schema ctx ?variables ?operation_name query expected =
   | Ok doc ->
       let result = match Graphql.Schema.execute schema ctx ?variables ?operation_name doc with
       | Ok (`Response data) -> data
+      | Ok (`Stream stream) ->
+          begin try match stream () with
+          | Seq.Cons (Ok data, _) -> data
+          | Seq.Cons (Error err, _) -> err
+          | Seq.Nil -> `Null
+          with _ -> `String "caught stream exn" end
       | Error err -> err
       in
       Alcotest.check yojson "invalid execution result" expected result

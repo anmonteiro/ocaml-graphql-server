@@ -40,6 +40,14 @@ let user = Schema.(obj "user"
   ])
 )
 
+(* Not available in List before OCaml 4.07 *)
+let list_to_seq l =
+  let rec aux l () = match l with
+    | [] -> Seq.Nil
+    | x :: tail -> Seq.Cons (x, aux tail)
+  in
+  aux l
+
 let schema = Schema.(schema [
       field "users"
         ~typ:(non_null (list (non_null user)))
@@ -58,5 +66,20 @@ let schema = Schema.(schema [
           users := List.append !users [{ id; name; role }];
           !users
         )
+    ]
+    ~subscriptions:[
+      subscription_field "subscribe_to_user"
+        ~typ:(non_null user)
+        ~args:Arg.[
+          arg' "error" ~typ:bool ~default:false;
+          arg' "raise" ~typ:bool ~default:false
+        ]
+        ~resolve:(fun () return_error raise_in_stream ->
+          if return_error then
+            Error "stream error"
+          else if raise_in_stream then
+            Ok (fun () -> Seq.Cons (raise Not_found, (fun () -> Seq.Nil)))
+          else
+            Ok (list_to_seq !users))
     ]
 )
