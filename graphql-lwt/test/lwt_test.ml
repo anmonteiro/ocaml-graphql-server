@@ -15,13 +15,25 @@ let test_query schema ctx query expected =
     match Graphql_parser.parse query with
     | Error err -> Lwt.fail_with err
     | Ok doc ->
-      Graphql_lwt.Schema.execute schema ctx doc >|= fun result ->
-      let result' = match result with
-      | Ok (`Response data) -> data
-      | Error err -> err
-      in
-      Alcotest.check yojson "invalid execution result" expected result'
+      Graphql_lwt.Schema.execute schema ctx doc >>= (function
+      | Ok (`Response data) -> Lwt.return data
+      | Ok (`Stream stream) ->
+          Lwt_stream.to_list stream >|= fun lst ->
+            `List (
+              List.fold_right (fun x acc -> match x with
+                | Ok data -> data :: acc
+                | _ -> acc) lst [])
+      | Error err -> Lwt.return err)
+      >|= fun result ->
+        Alcotest.check yojson "invalid execution result" expected result
   end
+
+let take n l =
+  let rec loop n l = match n, l with
+    | 0, _ | _, [] -> []
+    | _, x::xs -> x :: loop (n - 1) xs
+  in
+  loop n l
 
 let schema = Graphql_lwt.Schema.(schema [
       field "direct_string"
@@ -34,6 +46,15 @@ let schema = Graphql_lwt.Schema.(schema [
         ~args:Arg.[]
         ~resolve:(fun () () -> Lwt.return (Ok 42))
     ]
+  ~subscriptions:[
+    subscription_field "int_stream"
+      ~typ:(non_null int)
+      ~args:Arg.[
+        arg "first" ~typ:(non_null int)
+      ]
+      ~resolve:(fun () first ->
+        Lwt_result.return (Lwt_stream.of_list (take first [1; 2; 3])))
+  ]
 )
 
 let suite = [
@@ -45,6 +66,20 @@ let suite = [
       ]
     ])
   );
+  ("subscription", `Quick, fun () ->
+    test_query schema () "subscription { int_stream(first: 2) }" (`List [
+      `Assoc [
+        "data", `Assoc [
+          "int_stream", `Int 1
+        ]
+      ];
+      `Assoc [
+        "data", `Assoc [
+          "int_stream", `Int 2
+        ]
+      ]
+    ])
+  )
 ]
 
 let () = Alcotest.run "graphql-server" ["lwt", suite]

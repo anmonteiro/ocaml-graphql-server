@@ -41,12 +41,12 @@ let user = Schema.(obj "user"
 )
 
 (* Not available in List before OCaml 4.07 *)
-let list_to_seq l =
-  let rec aux l () = match l with
-    | [] -> Seq.Nil
-    | x :: tail -> Seq.Cons (x, aux tail)
+let list_to_seq n l =
+  let rec aux n l () = match n, l with
+    | _, [] | 0, _ -> Seq.Nil
+    | _, x :: tail -> Seq.Cons (x, aux (n - 1) tail)
   in
-  aux l
+  aux n l
 
 let schema = Schema.(schema [
       field "users"
@@ -72,14 +72,15 @@ let schema = Schema.(schema [
         ~typ:(non_null user)
         ~args:Arg.[
           arg' "error" ~typ:bool ~default:false;
-          arg' "raise" ~typ:bool ~default:false
+          arg' "raise" ~typ:bool ~default:false;
+          arg' "first" ~typ:int ~default:1;
         ]
-        ~resolve:(fun () return_error raise_in_stream ->
+        ~resolve:(fun () return_error raise_in_stream first ->
           if return_error then
             Error "stream error"
           else if raise_in_stream then
             Ok (fun () -> Seq.Cons (raise Not_found, (fun () -> Seq.Nil)))
           else
-            Ok (list_to_seq !users))
+            Ok (list_to_seq first !users))
     ]
 )
