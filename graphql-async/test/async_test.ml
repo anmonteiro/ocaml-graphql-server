@@ -20,21 +20,11 @@ let test_query schema ctx query expected =
       | Ok (`Response data) -> Async_kernel.return data
       | Ok (`Stream stream) ->
           Async_kernel.Pipe.to_list stream >>| fun lst ->
-            `List (
-              List.fold_right (fun x acc -> match x with
-                | Ok data -> data :: acc
-                | _ -> acc) lst [])
+            `List Core_kernel.(List.map lst ~f:(fun x -> Option.value_exn (Result.ok x)))
       | Error err -> Async_kernel.return err)
       >>| fun result ->
         Alcotest.check yojson "invalid execution result" expected result
   end
-
-let take n l =
-  let rec loop n l = match n, l with
-    | 0, _ | _, [] -> []
-    | _, x::xs -> x :: loop (n - 1) xs
-  in
-  loop n l
 
 let schema = Graphql_async.Schema.(schema [
       field "direct_string"
@@ -50,11 +40,9 @@ let schema = Graphql_async.Schema.(schema [
   ~subscriptions:[
     subscription_field "int_stream"
       ~typ:(non_null int)
-      ~args:Arg.[
-        arg "first" ~typ:(non_null int)
-      ]
-      ~resolve:(fun () first ->
-        Async_kernel.Deferred.Result.return (Async_kernel.Pipe.of_list (take first [1; 2; 3])))
+      ~args:Arg.[]
+      ~resolve:(fun () ->
+        Async_kernel.Deferred.Result.return (Async_kernel.Pipe.of_list [1; 2; 3]))
   ]
 )
 
@@ -68,7 +56,7 @@ let suite = [
     ])
   );
   ("subscription", `Quick, fun () ->
-    test_query schema () "subscription { int_stream(first: 2) }" (`List [
+    test_query schema () "subscription { int_stream }" (`List [
       `Assoc [
         "data", `Assoc [
           "int_stream", `Int 1
@@ -77,6 +65,11 @@ let suite = [
       `Assoc [
         "data", `Assoc [
           "int_stream", `Int 2
+        ]
+      ];
+      `Assoc [
+        "data", `Assoc [
+          "int_stream", `Int 3
         ]
       ]
     ])
