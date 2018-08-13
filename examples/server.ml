@@ -99,11 +99,12 @@ let schema = Schema.(schema [
         ~args:Arg.[arg' "intarg" ~typ:int ~default:42]
         ~resolve:(fun _ctx _intarg ->
           let user_stream, push_to_user_stream = Lwt_stream.create () in
+          let destroy_stream = (fun () -> push_to_user_stream None) in
           set_interval 2 (fun () ->
             let idx = Random.int (List.length users) in
             push_to_user_stream (Some (List.nth users idx)))
-          (fun () -> push_to_user_stream None);
-          Lwt_result.return user_stream)
+            destroy_stream;
+          Lwt_result.return (user_stream, destroy_stream))
     ]
 )
 

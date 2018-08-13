@@ -17,7 +17,7 @@ let test_query schema ctx query expected =
     | Ok doc ->
       Graphql_lwt.Schema.execute schema ctx doc >>= (function
       | Ok (`Response data) -> Lwt.return data
-      | Ok (`Stream stream) ->
+      | Ok (`Stream (stream, destroy)) ->
           Lwt_stream.to_list stream >|= fun lst ->
             `List (
               List.fold_right (fun x acc -> match x with
@@ -53,7 +53,9 @@ let schema = Graphql_lwt.Schema.(schema [
         arg "first" ~typ:(non_null int)
       ]
       ~resolve:(fun () first ->
-        Lwt_result.return (Lwt_stream.of_list (take first [1; 2; 3])))
+        let stream = Lwt_stream.of_list (take first [1; 2; 3]) in
+        let destroy = (fun () -> ()) in
+        Lwt_result.return (stream, destroy))
   ]
 )
 
