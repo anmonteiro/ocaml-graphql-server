@@ -4,6 +4,6 @@ module Schema : sig
                               and type 'a stream = 'a Lwt_stream.t * (unit -> unit)
 end
 
-module Server : sig
+(* module Server : sig
   val start : ?port:int -> ctx:(Cohttp.Request.t -> 'ctx) -> 'ctx Schema.schema -> unit Lwt.t
-end
+end *)

@@ -18,11 +18,19 @@ add "&raw" to the end of the URL within a browser.
       width: 100%;
     }
   </style>
-  <link href="//cdn.jsdelivr.net/graphiql/0.8.1/graphiql.css" rel="stylesheet" />
-  <script src="//cdn.jsdelivr.net/fetch/0.9.0/fetch.min.js"></script>
-  <script src="//cdn.jsdelivr.net/react/15.3.2/react.min.js"></script>
-  <script src="//cdn.jsdelivr.net/react/15.3.2/react-dom.min.js"></script>
-  <script src="//cdn.jsdelivr.net/graphiql/0.8.1/graphiql.js"></script>
+  <link href="//cdn.jsdelivr.net/npm/graphiql@0.11.11/graphiql.css" rel="stylesheet" />
+  <script src="//cdn.jsdelivr.net/gh/github/fetch@2.0.4/fetch.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/react@16.4.0/umd/react.production.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/react-dom@16.4.0/umd/react-dom.production.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/graphiql@0.11.11/graphiql.min.js"></script>
+  <script src="//unpkg.com/subscriptions-transport-ws@0.8.3/browser/client.js"></script>
+  <script src="//unpkg.com/graphiql-subscriptions-fetcher@0.0.2/browser/client.js"></script>
+
+  <!-- <link href="//cdn.jsdelivr.net/graphiql/0.8.1/graphiql.css" rel="stylesheet" /> -->
+  <!-- <script src="//cdn.jsdelivr.net/fetch/0.9.0/fetch.min.js"></script> -->
+  <!-- <script src="//cdn.jsdelivr.net/react/15.3.2/react.min.js"></script> -->
+  <!-- <script src="//cdn.jsdelivr.net/react/15.3.2/react-dom.min.js"></script> -->
+  <!-- <script src="//cdn.jsdelivr.net/graphiql/0.8.1/graphiql.js"></script> -->
 </head>
 <body>
   <script>
@@ -57,6 +65,7 @@ add "&raw" to the end of the URL within a browser.
         otherParams[k] = parameters[k];
       }
     }
+
     // Defines a GraphQL fetcher using the fetch API.
     function graphQLFetcher(graphQLParams) {
       return fetch(window.location, {
@@ -76,6 +85,14 @@ add "&raw" to the end of the URL within a browser.
         }
       });
     }
+
+    var subscriptionsClient = new window.SubscriptionsTransportWs.SubscriptionClient(
+      'ws://localhost:8080/subscriptions',
+      { reconnect: true });
+
+    var subscriptionsFetcher = window.GraphiQLSubscriptionsFetcher.graphQLFetcher(
+      subscriptionsClient,
+      graphQLFetcher);
 
     // When the query and variables string is edited, update the URL bar so
     // that it can be easily shared.
@@ -101,7 +118,7 @@ add "&raw" to the end of the URL within a browser.
     // Render <GraphiQL /> into the body.
     ReactDOM.render(
       React.createElement(GraphiQL, {
-        fetcher: graphQLFetcher,
+        fetcher: subscriptionsFetcher,
         onEditQuery: onEditQuery,
         onEditVariables: onEditVariables,
         onEditOperationName: onEditOperationName,
