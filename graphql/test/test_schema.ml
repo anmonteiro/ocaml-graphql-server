@@ -81,4 +81,23 @@ let schema =
               else if raise_in_stream then
                 Ok (fun () -> Seq.Cons (raise Not_found, fun () -> Seq.Nil))
               else Ok (list_to_seq first !users));
+        ]
+      ~directives:
+        [
+          directive "upperCase" ~locations:[ `Field ]
+            ~args:Arg.[]
+            ~typ:(non_null string)
+            ~resolve:(fun ~resolve ->
+              match resolve () with
+              | Ok (`String x) -> Ok (String.uppercase_ascii x)
+              | Ok _ -> Error "not string"
+              | Error _err -> Error "");
+          directive "neg" ~locations:[ `Field ]
+            ~args:Arg.[]
+            ~typ:(non_null int)
+            ~resolve:(fun ~resolve ->
+              match resolve () with
+              | Ok (`Int x) -> Ok (-x)
+              | Ok _ -> Error "not int"
+              | Error _err -> Error "");
         ])

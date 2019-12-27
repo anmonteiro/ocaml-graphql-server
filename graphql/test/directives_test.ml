@@ -45,27 +45,27 @@ let suite =
      * condition is false and the @include condition is true".
      * http://facebook.github.io/graphql/June2018/#sec--include
      *)
-      ( "both skip and include directives, field not queried",
-        `Quick,
-        fun () ->
-          let query =
-            "{ users { role @skip(if: true) @include(if: true) name } }"
-          in
-          test_query query
-            (`Assoc
-              [
-                ( "data",
-                  `Assoc
-                    [
-                      ( "users",
-                        `List
-                          [
-                            `Assoc [ ("name", `String "Alice") ];
-                            `Assoc [ ("name", `String "Bob") ];
-                            `Assoc [ ("name", `String "Charlie") ];
-                          ] );
-                    ] );
-              ]) );
+    ( "both skip and include directives, field not queried",
+      `Quick,
+      fun () ->
+        let query =
+          "{ users { role @skip(if: true) @include(if: true) name } }"
+        in
+        test_query query
+          (`Assoc
+            [
+              ( "data",
+                `Assoc
+                  [
+                    ( "users",
+                      `List
+                        [
+                          `Assoc [ ("name", `String "Alice") ];
+                          `Assoc [ ("name", `String "Bob") ];
+                          `Assoc [ ("name", `String "Charlie") ];
+                        ] );
+                  ] );
+            ]) );
     ( "both skip and include directives, field is queried",
       `Quick,
       fun () ->
@@ -88,8 +88,7 @@ let suite =
                             ];
                           `Assoc
                             [
-                              ("name", `String "Bob");
-                              ("role", `String "user");
+                              ("name", `String "Bob"); ("role", `String "user");
                             ];
                           `Assoc
                             [
@@ -120,23 +119,42 @@ let suite =
               ("data", `Null);
             ]) );
     (* http://facebook.github.io/graphql/June2018/#example-77377 *)
-      ( "directives + inline fragment",
-        `Quick,
-        fun () ->
-          let query = "{ users { name ... @include(if: false) { id }  } }" in
-          test_query query
-            (`Assoc
-              [
-                ( "data",
-                  `Assoc
-                    [
-                      ( "users",
-                        `List
-                          [
-                            `Assoc [ ("name", `String "Alice") ];
-                            `Assoc [ ("name", `String "Bob") ];
-                            `Assoc [ ("name", `String "Charlie") ];
-                          ] );
-                    ] );
-              ]) );
+    ( "directives + inline fragment",
+      `Quick,
+      fun () ->
+        let query = "{ users { name ... @include(if: false) { id }  } }" in
+        test_query query
+          (`Assoc
+            [
+              ( "data",
+                `Assoc
+                  [
+                    ( "users",
+                      `List
+                        [
+                          `Assoc [ ("name", `String "Alice") ];
+                          `Assoc [ ("name", `String "Bob") ];
+                          `Assoc [ ("name", `String "Charlie") ];
+                        ] );
+                  ] );
+            ]) );
+    ( "custom directive",
+      `Quick,
+      fun () ->
+        let query = "{ users { name @upperCase } }" in
+        test_query query
+          (`Assoc
+            [
+              ( "data",
+                `Assoc
+                  [
+                    ( "users",
+                      `List
+                        [
+                          `Assoc [ ("name", `String "ALICE") ];
+                          `Assoc [ ("name", `String "BOB") ];
+                          (* `Assoc [ ("name", `String "CHARLIE") ]; *)
+                        ] );
+                  ] );
+            ]) );
   ]

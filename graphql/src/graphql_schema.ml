@@ -56,6 +56,53 @@ module type Field_error = sig
     t -> ((string * Yojson.Basic.json)[@warning "-3"]) list option
 end
 
+module Tid = struct
+  module Tid = struct
+    type _ t = ..
+  end
+
+  module type Tid = sig
+    type t
+
+    type _ Tid.t += Tid : t Tid.t
+  end
+
+  type 'a tid = (module Tid with type t = 'a)
+
+  let tid () (type s) =
+    let module M = struct
+      type t = s
+
+      type _ Tid.t += Tid : t Tid.t
+    end in
+    (module M : Tid with type t = s)
+
+  (* let uid =
+    let id = ref (-1) in
+    fun () ->
+      incr id;
+      !id *)
+
+  (* type 'a key = { uid : int; tid : 'a tid; info : 'a } *)
+
+  (* let create info =
+    let uid = uid () in
+    let tid = tid () in
+    { uid; tid; info }
+ *)
+  (* type t = T : 'a key -> t *)
+
+  type ('a, 'b) teq = Teq : ('a, 'a) teq
+
+  (* let conv (type a b) (Teq : (a, b) teq) (a : a) : b = a *)
+
+  let eq : type r s. r tid -> s tid -> (r, s) teq option =
+   fun r s ->
+    let module R = (val r : Tid with type t = r) in
+    let module S = (val s : Tid with type t = s) in
+    match R.Tid with S.Tid -> Some Teq | _ -> None
+end
+
 (* Schema *)
 module Make (Io : IO) (Field_error : Field_error) = struct
   module Io = struct
@@ -92,6 +139,10 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       let ( >>| ) x f = map x ~f
 
       let ( >>=? ) = Result.bind
+
+      let ( >>|? ) x f = Result.map x ~f
+
+      let ( >>= ) = bind
     end
   end
 
@@ -155,12 +206,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       | NonNullable : 'a option arg_typ -> 'a arg_typ
 
     and _ arg =
-      | Arg : {
-          name : string;
-          doc : string option;
-          typ : 'a arg_typ;
-        }
-          -> 'a arg
+      | Arg : { name : string; doc : string option; typ : 'a arg_typ } -> 'a arg
       | DefaultArg : {
           name : string;
           doc : string option;
@@ -309,8 +355,8 @@ module Make (Io : IO) (Field_error : Field_error) = struct
           let arglist'' =
             Arg { name = arg.name; doc = arg.doc; typ = arg.typ } :: arglist'
           in
-          eval_arglist variable_map ?field_type ~field_name arglist''
-            key_values (function
+          eval_arglist variable_map ?field_type ~field_name arglist'' key_values
+            (function
             | None -> f arg.default
             | Some value -> f value)
       | Arg arg :: arglist' -> (
@@ -406,12 +452,18 @@ module Make (Io : IO) (Field_error : Field_error) = struct
   end
 
   (* Schema data types *)
-  type 'a scalar = { name : string; doc : string option; coerce : 'a -> json }
+  type 'a scalar = {
+    name : string;
+    doc : string option;
+    coerce : 'a -> json;
+    tid : 'a Tid.tid;
+  }
 
   type 'a enum = {
     name : string;
     doc : string option;
     values : 'a enum_value list;
+    tid : 'a Tid.tid;
   }
 
   type fragment_map = Graphql_parser.fragment StringMap.t
@@ -423,11 +475,24 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     variables : variable_map;
   }
 
+  type directive_location =
+    [ `Query
+    | `Mutation
+    | `Subscription
+    | `Field
+    | `Fragment_definition
+    | `Fragment_spread
+    | `Inline_fragment
+    | `Variable_definition ]
+
+  type 'a response = ('a, json) result
+
   type ('ctx, 'src) obj = {
     name : string;
     doc : string option;
     fields : ('ctx, 'src) field list Lazy.t;
     abstracts : abstract list ref;
+    tid : 'src Tid.tid;
   }
 
   and (_, _) field =
@@ -441,6 +506,18 @@ module Make (Io : IO) (Field_error : Field_error) = struct
         lift : 'a -> ('out, field_error) result Io.t;
       }
         -> ('ctx, 'src) field
+
+  and _ directive =
+    | Directive : {
+        name : string;
+        doc : string option;
+        typ : ('ctx, 'out) typ;
+        locations : directive_location list;
+        args : ('a, 'args) Arg.arg_list;
+        resolve : resolve:(unit -> json response Io.t) -> 'args;
+        lift : 'a -> ('out, field_error) result Io.t;
+      }
+        -> 'ctx directive
 
   and (_, _) typ =
     | Object : ('ctx, 'src) obj -> ('ctx, 'src option) typ
@@ -488,60 +565,25 @@ module Make (Io : IO) (Field_error : Field_error) = struct
 
   type ('ctx, 'a) abstract_typ = ('ctx, ('ctx, 'a) abstract_value option) typ
 
-  type directive_location =
-    [ `Query
-    | `Mutation
-    | `Subscription
-    | `Field
-    | `Fragment_definition
-    | `Fragment_spread
-    | `Inline_fragment
-    | `Variable_definition ]
-
-  type directive =
-    | Directive : {
-        name : string;
-        doc : string option;
-        locations : directive_location list;
-        args : ([ `Skip | `Include ], 'args) Arg.arg_list;
-        resolve : 'args;
-      }
-        -> directive
-
   type 'ctx schema = {
     query : ('ctx, unit) obj;
     mutation : ('ctx, unit) obj option;
     subscription : 'ctx subscription_obj option;
+    directives : 'ctx directive list;
+    mandatory_directives : 'ctx directive list;
   }
-
-  let schema ?(mutation_name = "mutation") ?mutations
-      ?(subscription_name = "subscription") ?subscriptions
-      ?(query_name = "query") fields =
-    {
-      query =
-        {
-          name = query_name;
-          doc = None;
-          abstracts = ref [];
-          fields = lazy fields;
-        };
-      mutation =
-        Option.map mutations ~f:(fun fields ->
-            {
-              name = mutation_name;
-              doc = None;
-              abstracts = ref [];
-              fields = lazy fields;
-            });
-      subscription =
-        Option.map subscriptions ~f:(fun fields ->
-            { name = subscription_name; doc = None; fields });
-    }
 
   (* Constructor functions *)
   let obj ?doc name ~fields =
     let rec o =
-      Object { name; doc; fields = lazy (fields o); abstracts = ref [] }
+      Object
+        {
+          name;
+          doc;
+          fields = lazy (fields o);
+          abstracts = ref [];
+          tid = Tid.tid ();
+        }
     in
     o
 
@@ -568,9 +610,9 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       ~resolve =
     SubscriptionField { name; doc; deprecated; typ; args; resolve }
 
-  let enum ?doc name ~values = Enum { name; doc; values }
+  let enum ?doc name ~values = Enum { name; doc; values; tid = Tid.tid () }
 
-  let scalar ?doc name ~coerce = Scalar { name; doc; coerce }
+  let scalar ?doc name ~coerce = Scalar { name; doc; coerce; tid = Tid.tid () }
 
   let list typ = List typ
 
@@ -609,50 +651,165 @@ module Make (Io : IO) (Field_error : Field_error) = struct
             })
         fields
     in
-    { name; doc; abstracts = ref []; fields = lazy fields }
+    { name; doc; abstracts = ref []; fields = lazy fields; tid = Tid.tid () }
+
+  (** Maintainer's note:
+   *
+   *  The astute reader may be wondering why there are so many (seemingly
+   *  useless, and arguably bad style) toplevel definitions in the following
+   *  code. Turns out that in order for these values to remain polymorphic on
+   *  the `'ctx` type parameter for all `'ctx`, they can't capture the "inner
+   *  scope" of the calling form.
+   *)
+
+  let int_id = Tid.tid ()
 
   (* Built-in scalars *)
   let int : 'ctx. ('ctx, int option) typ =
-    Scalar { name = "Int"; doc = None; coerce = (fun i -> `Int i) }
+    Scalar
+      { name = "Int"; doc = None; coerce = (fun i -> `Int i); tid = int_id }
+
+  let string_id = Tid.tid ()
 
   let string : 'ctx. ('ctx, string option) typ =
-    Scalar { name = "String"; doc = None; coerce = (fun s -> `String s) }
+    Scalar
+      {
+        name = "String";
+        doc = None;
+        coerce = (fun s -> `String s);
+        tid = string_id;
+      }
+
+  let bool_id = Tid.tid ()
 
   let bool : 'ctx. ('ctx, bool option) typ =
-    Scalar { name = "Boolean"; doc = None; coerce = (fun b -> `Bool b) }
+    Scalar
+      {
+        name = "Boolean";
+        doc = None;
+        coerce = (fun b -> `Bool b);
+        tid = bool_id;
+      }
+
+  let float_id = Tid.tid ()
 
   let float : 'ctx. ('ctx, float option) typ =
-    Scalar { name = "Float"; doc = None; coerce = (fun f -> `Float f) }
+    Scalar
+      {
+        name = "Float";
+        doc = None;
+        coerce = (fun f -> `Float f);
+        tid = float_id;
+      }
+
+  let guid_id = Tid.tid ()
 
   let guid : 'ctx. ('ctx, string option) typ =
-    Scalar { name = "ID"; doc = None; coerce = (fun x -> `String x) }
+    Scalar
+      { name = "ID"; doc = None; coerce = (fun x -> `String x); tid = guid_id }
 
-  (* Mandatory directives: skip and include *)
-  let skip_directive =
-    Directive
-      {
-        name = "skip";
-        doc =
-          Some
-            "Directs the executor to skip this field or fragment when the \
-             `if` argument is true.";
-        locations = [ `Field; `Fragment_spread; `Inline_fragment ];
-        args = Arg.[ arg "if" ~doc:"Skipped when true." ~typ:(non_null bool) ];
-        resolve = (function true -> `Skip | false -> `Include);
-      }
+  let directive ?doc name ~locations ~typ ~args ~resolve =
+    Directive { name; doc; args; resolve; typ; locations; lift = id }
 
-  let include_directive =
-    Directive
-      {
-        name = "include";
-        doc =
-          Some
-            "Directs the executor to include this field or fragment only when \
-             the `if` argument is true.";
-        locations = [ `Field; `Fragment_spread; `Inline_fragment ];
-        args = Arg.[ arg "if" ~doc:"Included when true." ~typ:(non_null bool) ];
-        resolve = (function true -> `Include | false -> `Skip);
-      }
+  module Mandatory_directives = struct
+    type should_include = Include | Skip
+
+    let should_include_id, should_include_values =
+      ( Tid.tid (),
+        [ enum_value "include" ~value:Include; enum_value "skip" ~value:Skip ]
+      )
+
+    let should_include_enum : 'ctx. ('ctx, should_include option) typ =
+      Enum
+        {
+          name = "should_include";
+          doc = None;
+          values = should_include_values;
+          tid = should_include_id;
+        }
+
+    let skip_directive : 'ctx. 'ctx directive =
+      Directive
+        {
+          name = "skip";
+          doc =
+            Some
+              "Directs the executor to skip this field or fragment when the \
+               `if` argument is true.";
+          locations = [ `Field; `Fragment_spread; `Inline_fragment ];
+          typ = NonNullable should_include_enum;
+          args =
+            Arg.
+              [
+                Arg
+                  {
+                    name = "if";
+                    doc = Some "Skipped when true.";
+                    typ = NonNullable bool;
+                  };
+              ];
+          resolve = (fun ~resolve:_ arg -> if arg then Skip else Include);
+          lift = Io.ok;
+        }
+
+    let include_directive : 'ctx. 'ctx directive =
+      Directive
+        {
+          name = "include";
+          doc =
+            Some
+              "Directs the executor to include this field or fragment only \
+               when the `if` argument is true.";
+          locations = [ `Field; `Fragment_spread; `Inline_fragment ];
+          typ = NonNullable should_include_enum;
+          args =
+            Arg.
+              [
+                Arg
+                  {
+                    name = "if";
+                    doc = Some "Included when true.";
+                    typ = NonNullable bool;
+                  };
+              ];
+          resolve = (fun ~resolve:_ arg -> if arg then Include else Skip);
+          lift = Io.ok;
+        }
+  end
+
+  let schema :
+        'ctx. ?directives:'ctx directive list -> ?mutation_name:string ->
+        ?mutations:('ctx, unit) field list -> ?subscription_name:string ->
+        ?subscriptions:'ctx subscription_field list -> ?query_name:string ->
+        ('ctx, unit) field list -> 'ctx schema =
+   fun ?(directives = []) ?(mutation_name = "mutation") ?mutations
+       ?(subscription_name = "subscription") ?subscriptions
+       ?(query_name = "query") fields ->
+    {
+      query =
+        {
+          name = query_name;
+          doc = None;
+          abstracts = ref [];
+          fields = lazy fields;
+          tid = Tid.tid ();
+        };
+      mutation =
+        Option.map mutations ~f:(fun fields ->
+            {
+              name = mutation_name;
+              doc = None;
+              abstracts = ref [];
+              fields = lazy fields;
+              tid = Tid.tid ();
+            });
+      subscription =
+        Option.map subscriptions ~f:(fun fields ->
+            { name = subscription_name; doc = None; fields });
+      directives;
+      mandatory_directives =
+        Mandatory_directives.[ skip_directive; include_directive ];
+    }
 
   module Introspection = struct
     (* any_typ, any_field and any_arg hide type parameters to avoid scope escaping errors *)
@@ -770,9 +927,12 @@ module Make (Io : IO) (Field_error : Field_error) = struct
 
     let no_abstracts = ref []
 
+    let __type_kind_tid = Tid.tid ()
+
     let __type_kind =
       Enum
         {
+          tid = __type_kind_tid;
           name = "__TypeKind";
           doc = None;
           values =
@@ -828,9 +988,12 @@ module Make (Io : IO) (Field_error : Field_error) = struct
             ];
         }
 
+    let __enum_value_tid = Tid.tid ()
+
     let __enum_value : 'ctx. ('ctx, any_enum_value option) typ =
       Object
         {
+          tid = __enum_value_tid;
           name = "__EnumValue";
           doc = None;
           abstracts = no_abstracts;
@@ -888,9 +1051,16 @@ module Make (Io : IO) (Field_error : Field_error) = struct
               ];
         }
 
+    let __input_value_tid = Tid.tid ()
+
+    let __type_tid = Tid.tid ()
+
+    let __field_tid = Tid.tid ()
+
     let rec __input_value : 'ctx. ('ctx, any_arg option) typ =
       Object
         {
+          tid = __input_value_tid;
           name = "__InputValue";
           doc = None;
           abstracts = no_abstracts;
@@ -955,6 +1125,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     and __type : 'ctx. ('ctx, any_typ option) typ =
       Object
         {
+          tid = __type_tid;
           name = "__Type";
           doc = None;
           abstracts = no_abstracts;
@@ -1150,6 +1321,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     and __field : 'ctx. ('ctx, any_field option) typ =
       Object
         {
+          tid = __field_tid;
           name = "__Field";
           doc = None;
           abstracts = no_abstracts;
@@ -1241,17 +1413,20 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     resolve =
                       (fun _ f ->
                         match f with
-                        | AnyField
-                            (Field { deprecated = Deprecated reason; _ }) ->
+                        | AnyField (Field { deprecated = Deprecated reason; _ })
+                          ->
                             reason
                         | _ -> None);
                   };
               ];
         }
 
-    let __directive_location =
+    let __directive_location_tid = Tid.tid ()
+
+    let __directive_location : 'ctx. ('ctx, directive_location option) typ =
       Enum
         {
+          tid = __directive_location_tid;
           name = "__DirectiveLocation";
           doc = None;
           values =
@@ -1307,9 +1482,14 @@ module Make (Io : IO) (Field_error : Field_error) = struct
             ];
         }
 
-    let __directive =
+    type any_directive = AnyDirective : _ directive -> any_directive
+
+    let __directive_tid = Tid.tid ()
+
+    let __directive : 'ctx. ('ctx, any_directive option) typ =
       Object
         {
+          tid = __directive_tid;
           name = "__Directive";
           doc = None;
           abstracts = no_abstracts;
@@ -1324,7 +1504,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = NonNullable string;
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ (Directive d) -> d.name);
+                    resolve = (fun _ (AnyDirective (Directive d)) -> d.name);
                   };
                 Field
                   {
@@ -1334,7 +1514,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = string;
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ (Directive d) -> d.doc);
+                    resolve = (fun _ (AnyDirective (Directive d)) -> d.doc);
                   };
                 Field
                   {
@@ -1344,7 +1524,8 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = NonNullable (List (NonNullable __directive_location));
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ (Directive d) -> d.locations);
+                    resolve =
+                      (fun _ (AnyDirective (Directive d)) -> d.locations);
                   };
                 Field
                   {
@@ -1354,14 +1535,21 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = NonNullable (List (NonNullable __input_value));
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ (Directive d) -> args_to_list d.args);
+                    resolve =
+                      (fun _ (AnyDirective (Directive d)) ->
+                        args_to_list d.args);
                   };
               ];
         }
 
-    let __schema : 'ctx. ('ctx, ('ctx schema * any_typ list) option) typ =
+    type any_schema = AnySchema : 'ctx schema * any_typ list -> any_schema
+
+    let __schema_tid = Tid.tid ()
+
+    let __schema : 'ctx. ('ctx, any_schema option) typ =
       Object
         {
+          tid = __schema_tid;
           name = "__Schema";
           doc = None;
           abstracts = no_abstracts;
@@ -1376,7 +1564,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = NonNullable (List (NonNullable __type));
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ (_schema, types) -> types);
+                    resolve = (fun _ (AnySchema (_schema, types)) -> types);
                   };
                 Field
                   {
@@ -1387,7 +1575,8 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     args = Arg.[];
                     lift = Io.ok;
                     resolve =
-                      (fun _ (schema, _types) -> AnyTyp (Object schema.query));
+                      (fun _ (AnySchema (schema, _types)) ->
+                        AnyTyp (Object schema.query));
                   };
                 Field
                   {
@@ -1398,7 +1587,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     args = Arg.[];
                     lift = Io.ok;
                     resolve =
-                      (fun _ (schema, _types) ->
+                      (fun _ (AnySchema (schema, _types)) ->
                         Option.map schema.mutation ~f:(fun mut ->
                             AnyTyp (Object mut)));
                   };
@@ -1411,7 +1600,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     args = Arg.[];
                     lift = Io.ok;
                     resolve =
-                      (fun _ (schema, _types) ->
+                      (fun _ (AnySchema (schema, _types)) ->
                         Option.map schema.subscription ~f:(fun subs ->
                             AnyTyp (Object (obj_of_subscription_obj subs))));
                   };
@@ -1423,7 +1612,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = NonNullable (List (NonNullable __directive));
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ _ -> []);
+                    resolve = (fun _ _ -> List.map (fun d -> AnyDirective d) []);
                   };
               ];
         }
@@ -1439,7 +1628,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
             typ = NonNullable __schema;
             args = Arg.[];
             lift = Io.ok;
-            resolve = (fun _ _ -> (schema, types));
+            resolve = (fun _ _ -> AnySchema (schema, types));
           }
       in
       let type_field =
@@ -1482,6 +1671,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
   type execution_order = Serial | Parallel
 
   type 'ctx execution_context = {
+    schema : 'ctx schema;
     variables : variable_map;
     fragments : fragment_map;
     ctx : 'ctx;
@@ -1504,34 +1694,68 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     | `Operation_name_required
     | `Operation_not_found ]
 
-  type 'a response = ('a, json) result
-
   let matches_type_condition type_condition (obj : ('ctx, 'src) obj) =
     obj.name = type_condition
     || List.exists
          (fun (abstract : abstract) -> abstract.name = type_condition)
          !(obj.abstracts)
 
-  let rec should_include_field ctx (directives : Graphql_parser.directive list)
-      =
-    match directives with
-    | [] -> Ok true
-    | { name = "skip"; arguments } :: rest ->
-        eval_directive ctx skip_directive arguments rest
-    | { name = "include"; arguments } :: rest ->
-        eval_directive ctx include_directive arguments rest
-    | { name; _ } :: _ ->
-        let err = Format.sprintf "Unknown directive: %s" name in
-        Error err
+  let make_resolve_info { ctx; fragments; variables; _ } field =
+    { ctx; field; fragments; variables }
 
-  and eval_directive ctx (Directive { name; args; resolve; _ }) arguments rest
-      =
-    let open Rresult in
-    Arg.eval_arglist ctx.variables ~field_type:"directive" ~field_name:name
-      args arguments resolve
-    >>= function
-    | `Skip -> Ok false
-    | `Include -> should_include_field ctx rest
+  let eval_directive :
+      type out args a.
+      variable_map ->
+      Graphql_parser.directive ->
+      (a, args) Arg.arg_list ->
+      resolver:args ->
+      lift:(a -> (out, field_error) result Io.t) ->
+      (out, string) result Io.t =
+   fun variables directive_field args ~resolver ~lift ->
+    match
+      Arg.eval_arglist variables ~field_type:"directive"
+        ~field_name:directive_field.name args directive_field.arguments resolver
+    with
+    | Ok unlifted_value ->
+        lift unlifted_value |> Io.Result.map_error ~f:(fun _ -> "")
+    | Error msg -> Io.error msg
+
+  let rec should_include_field :
+      type ctx.
+      ctx execution_context ->
+      Graphql_parser.directive list ->
+      (bool, string) result Io.t =
+   fun ctx (directives : Graphql_parser.directive list) ->
+    let open Io.Infix in
+    let eval directive_field (Directive { resolve; lift; typ; args; _ }) rest =
+      (* `@skip` / `@include` are special and never call `resolve` *)
+      let resolver = resolve ~resolve:(fun _ -> assert false) in
+      eval_directive ctx.variables directive_field args (* typ *) ~resolver
+        ~lift
+      >>=? fun include_skip ->
+      let open Mandatory_directives in
+      let ret =
+        match (typ, should_include_enum) with
+        | NonNullable (Enum e1), Enum e2 -> (
+            match Tid.eq e1.tid e2.tid with
+            | Some Teq -> (include_skip : should_include)
+            | _ -> Include )
+        | _ -> Include
+      in
+      match ret with
+      | Skip -> Io.ok false
+      | Include -> should_include_field ctx rest
+    in
+    match directives with
+    | [] -> Io.ok true
+    | directive_field :: rest -> (
+        match
+          List.find
+            (fun (Directive { name; _ }) -> name = directive_field.name)
+            ctx.schema.mandatory_directives
+        with
+        | Some directive -> eval directive_field directive rest
+        | None -> should_include_field ctx rest )
 
   let alias_or_name : Graphql_parser.field -> string =
    fun field ->
@@ -1556,37 +1780,39 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       'ctx execution_context ->
       ('ctx, 'src) obj ->
       Graphql_parser.selection list ->
-      (Graphql_parser.field list, string) result =
+      (Graphql_parser.field list, string) result Io.t =
    fun ctx obj fields ->
-    let open Rresult in
-    List.map
-      (function
-        | Graphql_parser.Field field ->
-            should_include_field ctx field.directives >>| fun include_field ->
-            if include_field then [ field ] else []
-        | Graphql_parser.FragmentSpread spread -> (
-            match StringMap.find spread.name ctx.fragments with
-            | Some { directives; type_condition; selection_set; _ }
-              when matches_type_condition type_condition obj ->
-                should_include_field ctx directives >>= fun include_field ->
-                if include_field then collect_fields ctx obj selection_set
-                else Ok []
-            | _ -> Ok [] )
-        | Graphql_parser.InlineFragment fragment ->
-            let matches_type_condition =
-              match fragment.type_condition with
-              | None -> true
-              | Some condition -> matches_type_condition condition obj
-            in
-            if matches_type_condition then
-              should_include_field ctx fragment.directives
-              >>= fun include_field ->
-              if include_field then
-                collect_fields ctx obj fragment.selection_set
-              else Ok []
-            else Ok [])
-      fields
-    |> List.Result.join |> Rresult.R.map List.concat
+    let open Io.Infix in
+    let ios =
+      List.map
+        (function
+          | Graphql_parser.Field field -> (
+              should_include_field ctx field.directives >>|? function
+              | true -> [ field ]
+              | false -> [] )
+          | Graphql_parser.FragmentSpread spread -> (
+              match StringMap.find spread.name ctx.fragments with
+              | Some { directives; type_condition; selection_set; _ }
+                when matches_type_condition type_condition obj -> (
+                  should_include_field ctx directives >>=? function
+                  | true -> collect_fields ctx obj selection_set
+                  | false -> Io.ok [] )
+              | _ -> Io.ok [] )
+          | Graphql_parser.InlineFragment fragment ->
+              let matches_type_condition =
+                match fragment.type_condition with
+                | None -> true
+                | Some condition -> matches_type_condition condition obj
+              in
+              if matches_type_condition then
+                should_include_field ctx fragment.directives >>=? function
+                | true -> collect_fields ctx obj fragment.selection_set
+                | false -> Io.ok []
+              else Io.ok [])
+        fields
+    in
+    ios |> Io.all >>| fun results ->
+    results |> List.Result.join |> Rresult.R.map List.concat
     |> Rresult.R.map merge_selections
 
   let field_from_object :
@@ -1601,12 +1827,17 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       (fun (SubscriptionField field) -> field.name = field_name)
       obj.fields
 
+  let directive_from_name (* : 'ctx schema -> string -> 'ctx directive option *)
+      schema directive_name =
+    List.find
+      (fun (Directive directive) -> directive.name = directive_name)
+      schema.directives
+
   let coerce_or_null :
       'a option ->
       ('a -> (json * error list, 'b) result Io.t) ->
       (json * error list, 'b) result Io.t =
-   fun src f ->
-    match src with None -> Io.ok (`Null, []) | Some src' -> f src'
+   fun src f -> match src with None -> Io.ok (`Null, []) | Some src' -> f src'
 
   let map_fields_with_order = function
     | Serial -> Io.map_s ~memo:[]
@@ -1628,10 +1859,25 @@ module Make (Io : IO) (Field_error : Field_error) = struct
 
   let error_response ?data ?path ?extensions msg =
     let errors = ("errors", `List [ error_to_json ?path ?extensions msg ]) in
-    let data =
-      match data with None -> [] | Some data -> [ ("data", data) ]
-    in
+    let data = match data with None -> [] | Some data -> [ ("data", data) ] in
     `Assoc (errors :: data)
+
+  let to_response = function
+    | Ok _ as res -> res
+    | Error `No_operation_found -> Error (error_response "No operation found")
+    | Error `Operation_not_found -> Error (error_response "Operation not found")
+    | Error `Operation_name_required ->
+        Error (error_response "Operation name required")
+    | Error `Subscriptions_not_configured ->
+        Error (error_response "Subscriptions not configured")
+    | Error `Mutations_not_configured ->
+        Error (error_response "Mutations not configured")
+    | Error (`Validation_error msg) -> Error (error_response msg)
+    | Error (`Argument_error msg) -> Error (error_response ~data:`Null msg)
+    | Error (`Resolve_error (field_error, path)) ->
+        let extensions = Field_error.extensions_of_field_error field_error in
+        let msg = Field_error.message_of_field_error field_error in
+        Error (error_response ~data:`Null ~path ?extensions msg)
 
   let rec present :
       type ctx src.
@@ -1642,6 +1888,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       path ->
       (json * error list, [> resolve_error ]) result Io.t =
    fun ctx src query_field typ path ->
+    let open Io.Infix in
     match typ with
     | Scalar s -> coerce_or_null src (fun x -> Io.ok (s.coerce x, []))
     | List t ->
@@ -1655,7 +1902,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     | NonNullable t -> present ctx (Some src) query_field t path
     | Object o ->
         coerce_or_null src (fun src' ->
-            match collect_fields ctx o query_field.selection_set with
+            collect_fields ctx o query_field.selection_set >>= function
             | Ok fields -> resolve_fields ctx src' o fields path
             | Error e -> Io.error (`Argument_error e))
     | Enum e ->
@@ -1681,15 +1928,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     let open Io.Infix in
     let name = alias_or_name query_field in
     let path' = `String name :: path in
-    let resolve_info =
-      {
-        ctx = ctx.ctx;
-        field = query_field;
-        fragments = ctx.fragments;
-        variables = ctx.variables;
-      }
-    in
-    let resolver = field.resolve resolve_info src in
+    let resolver = field.resolve (make_resolve_info ctx query_field) src in
     match
       Arg.eval_arglist ctx.variables ~field_name:field.name field.args
         query_field.arguments resolver
@@ -1720,21 +1959,74 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       path ->
       (json * error list, [> resolve_error ]) result Io.t =
    fun ctx ?(execution_order = Parallel) src obj fields path ->
-    map_fields_with_order execution_order
-      (fun (query_field : Graphql_parser.field) ->
-        let name = alias_or_name query_field in
-        if query_field.name = "__typename" then
-          Io.ok ((name, `String obj.name), [])
-        else
-          match field_from_object obj query_field.name with
-          | Some field -> resolve_field ctx src query_field field path
-          | None ->
-              let err =
-                Printf.sprintf "Field '%s' is not defined on type '%s'"
-                  query_field.name obj.name
-              in
-              Io.error (`Validation_error err))
-      fields
+    let really_resolve_field (query_field : Graphql_parser.field) =
+      let name = alias_or_name query_field in
+      if query_field.name = "__typename" then
+        Io.ok ((name, `String obj.name), [])
+      else
+        match field_from_object obj query_field.name with
+        | Some field -> resolve_field ctx src query_field field path
+        | None ->
+            let err =
+              Printf.sprintf "Field '%s' is not defined on type '%s'"
+                query_field.name obj.name
+            in
+            Io.error (`Validation_error err)
+    in
+    let resolve_field (query_field : Graphql_parser.field) =
+      let open Io.Infix in
+      let rec inner (directives : Graphql_parser.directive list) =
+        match directives with
+        | [] -> really_resolve_field query_field
+        | { Graphql_parser.name = directive_name; arguments; _ } :: rest -> (
+            match directive_from_name ctx.schema directive_name with
+            | Some (Directive ({ args; resolve; _ } as directive)) -> (
+                let name = alias_or_name query_field in
+                let path' = `String name :: path in
+                let resolver =
+                  resolve ~resolve:(fun () ->
+                      inner rest >>= function
+                      | Ok ((_name, res), _errors) -> Io.ok res
+                      | Error _ as err -> Io.return (to_response err))
+                in
+                match
+                  Arg.eval_arglist ctx.variables ~field_type:"directive"
+                    ~field_name:name args arguments resolver
+                with
+                | Ok unlifted_value -> (
+                    let lifted_value =
+                      directive.lift unlifted_value
+                      |> Io.Result.map_error ~f:(fun err ->
+                             `Resolve_error (err, path'))
+                      >>=? fun resolved ->
+                      present ctx resolved query_field directive.typ path'
+                    in
+                    lifted_value >>| function
+                    | Ok (value, errors) -> Ok ((name, value), errors)
+                    | (Error (`Argument_error _) | Error (`Validation_error _))
+                      as error ->
+                        error
+                    | Error (`Resolve_error err) as error -> (
+                        match directive.typ with
+                        | NonNullable _ -> error
+                        | _ -> Ok ((name, `Null), [ err ]) ) )
+                | Error err -> Io.error (`Argument_error err) )
+            | None ->
+                let err =
+                  Format.sprintf "Unknown directive: %s" directive_name
+                in
+                Io.return (Error (`Argument_error err)) )
+      in
+      inner
+        (List.filter
+           (fun (directive : Graphql_parser.directive) ->
+             not
+               (List.exists
+                  (fun (Directive { name; _ }) -> name = directive.name)
+                  ctx.schema.mandatory_directives))
+           query_field.directives)
+    in
+    map_fields_with_order execution_order resolve_field fields
     |> Io.map ~f:List.Result.join
     |> Io.Result.map ~f:(fun xs ->
            (`Assoc (List.map fst xs), List.map snd xs |> List.concat))
@@ -1754,24 +2046,6 @@ module Make (Io : IO) (Field_error : Field_error) = struct
         in
         `Assoc [ ("errors", `List errors); ("data", data) ]
 
-  let to_response = function
-    | Ok _ as res -> res
-    | Error `No_operation_found -> Error (error_response "No operation found")
-    | Error `Operation_not_found ->
-        Error (error_response "Operation not found")
-    | Error `Operation_name_required ->
-        Error (error_response "Operation name required")
-    | Error `Subscriptions_not_configured ->
-        Error (error_response "Subscriptions not configured")
-    | Error `Mutations_not_configured ->
-        Error (error_response "Mutations not configured")
-    | Error (`Validation_error msg) -> Error (error_response msg)
-    | Error (`Argument_error msg) -> Error (error_response ~data:`Null msg)
-    | Error (`Resolve_error (field_error, path)) ->
-        let extensions = Field_error.extensions_of_field_error field_error in
-        let msg = Field_error.message_of_field_error field_error in
-        Error (error_response ~data:`Null ~path ?extensions msg)
-
   let subscribe :
       type ctx.
       ctx execution_context ->
@@ -1782,18 +2056,10 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     let open Io.Infix in
     let name = alias_or_name field in
     let path = [ `String name ] in
-    let resolve_info =
-      {
-        ctx = ctx.ctx;
-        field;
-        fragments = ctx.fragments;
-        variables = ctx.variables;
-      }
-    in
-    let resolver = subs_field.resolve resolve_info in
+    let resolver = subs_field.resolve (make_resolve_info ctx field) in
     match
-      Arg.eval_arglist ctx.variables ~field_name:subs_field.name
-        subs_field.args field.arguments resolver
+      Arg.eval_arglist ctx.variables ~field_name:subs_field.name subs_field.args
+        field.arguments resolver
     with
     | Ok result ->
         result
@@ -1807,19 +2073,18 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     | Error err -> Io.error (`Argument_error err)
 
   let execute_operation :
-      'ctx schema ->
       'ctx execution_context ->
       Graphql_parser.operation ->
       ( [ `Response of json | `Stream of json response Io.Stream.t ],
         [> execute_error ] )
       result
       Io.t =
-   fun schema ctx operation ->
+   fun ctx operation ->
     let open Io.Infix in
     match operation.optype with
     | Graphql_parser.Query ->
-        let query = schema.query in
-        Io.return (collect_fields ctx query operation.selection_set)
+        let query = ctx.schema.query in
+        collect_fields ctx query operation.selection_set
         |> Io.Result.map_error ~f:(fun e -> `Argument_error e)
         >>=? fun fields ->
         ( resolve_fields ctx () query fields []
@@ -1828,10 +2093,10 @@ module Make (Io : IO) (Field_error : Field_error) = struct
         |> Io.Result.map ~f:(fun data_errs ->
                `Response (data_to_json data_errs))
     | Graphql_parser.Mutation -> (
-        match schema.mutation with
+        match ctx.schema.mutation with
         | None -> Io.error `Mutations_not_configured
         | Some mut ->
-            Io.return (collect_fields ctx mut operation.selection_set)
+            collect_fields ctx mut operation.selection_set
             |> Io.Result.map_error ~f:(fun e -> `Argument_error e)
             >>=? fun fields ->
             ( resolve_fields ~execution_order:Serial ctx () mut fields []
@@ -1840,13 +2105,12 @@ module Make (Io : IO) (Field_error : Field_error) = struct
             |> Io.Result.map ~f:(fun data_errs ->
                    `Response (data_to_json data_errs)) )
     | Graphql_parser.Subscription -> (
-        match schema.subscription with
+        match ctx.schema.subscription with
         | None -> Io.error `Subscriptions_not_configured
         | Some subs -> (
-            Io.return
-              (collect_fields ctx
-                 (obj_of_subscription_obj subs)
-                 operation.selection_set)
+            collect_fields ctx
+              (obj_of_subscription_obj subs)
+              operation.selection_set
             |> Io.Result.map_error ~f:(fun e -> `Argument_error e)
             >>=? fun fields ->
             match fields with
@@ -1946,8 +2210,14 @@ module Make (Io : IO) (Field_error : Field_error) = struct
           Ok (List.find_exn (fun op -> op.Graphql_parser.name = Some name) ops)
         with Not_found -> Error `Operation_not_found )
 
-  let execute schema ctx ?(variables = []) ?operation_name doc =
+  let execute :
+        'ctx. ('ctx schema -> 'ctx -> ?variables:variables ->
+        ?operation_name:string -> Graphql_parser.document ->
+        [ `Response of json | `Stream of json response Io.Stream.t ] response
+        Io.t[@warning "-3"]) =
+   fun schema ctx ?(variables = []) ?operation_name doc ->
     let open Io.Infix in
+    (* Mandatory directives: skip and include *)
     let execute' schema ctx doc =
       Io.return (collect_and_validate_fragments doc) >>=? fun fragments ->
       let schema' = Introspection.add_built_in_fields schema in
@@ -1965,8 +2235,8 @@ module Make (Io : IO) (Field_error : Field_error) = struct
           (fun memo (name, value) -> StringMap.add name value memo)
           default_variables variables
       in
-      let execution_ctx = { fragments; ctx; variables } in
-      execute_operation schema' execution_ctx op
+      let execution_ctx = { schema = schema'; fragments; ctx; variables } in
+      execute_operation execution_ctx op
     in
     execute' schema ctx doc >>| to_response
 end

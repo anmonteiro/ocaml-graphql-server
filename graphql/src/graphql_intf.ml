@@ -47,6 +47,15 @@ module type Schema = sig
 
   type field_error
 
+  type directive_location =
+    [ `Query
+    | `Mutation
+    | `Subscription
+    | `Field
+    | `Fragment_definition
+    | `Fragment_spread
+    | `Inline_fragment
+    | `Variable_definition ]
   (** {3 Base types } *)
 
   type 'ctx schema
@@ -59,9 +68,12 @@ module type Schema = sig
 
   type 'a enum_value
 
+  type 'ctx directive
+
   (** {3 Constructors } *)
 
   val schema :
+    ?directives:'ctx directive list ->
     ?mutation_name:string ->
     ?mutations:('ctx, unit) field list ->
     ?subscription_name:string ->
@@ -73,11 +85,7 @@ module type Schema = sig
   type deprecated = NotDeprecated | Deprecated of string option
 
   val enum_value :
-    ?doc:string ->
-    ?deprecated:deprecated ->
-    string ->
-    value:'a ->
-    'a enum_value
+    ?doc:string -> ?deprecated:deprecated -> string -> value:'a -> 'a enum_value
 
   val obj :
     ?doc:string ->
@@ -210,6 +218,19 @@ module type Schema = sig
     'src ->
     ('ctx, 'a) abstract_value
 
+  type json = Yojson.Basic.json [@@ocaml.warning "-3"]
+
+  type 'a response = (('a, json) result[@warning "-3"])
+
+  val directive :
+    ?doc:string ->
+    string ->
+    locations:directive_location list ->
+    typ:('ctx, 'a) typ ->
+    args:(('a, field_error) result Io.t, 'b) Arg.arg_list ->
+    resolve:(resolve:(unit -> json response Io.t) -> 'b) ->
+    'ctx directive
+
   (** {3 Built-in scalars} *)
 
   val int : ('ctx, int option) typ
@@ -224,18 +245,14 @@ module type Schema = sig
 
   type variables = (string * Graphql_parser.const_value) list
 
-  type 'a response = (('a, Yojson.Basic.json) result[@warning "-3"])
-
   val execute :
     ('ctx schema ->
      'ctx ->
      ?variables:variables ->
      ?operation_name:string ->
      Graphql_parser.document ->
-     [ `Response of Yojson.Basic.json
-     | `Stream of Yojson.Basic.json response Io.Stream.t ]
-     response
-     Io.t[@warning "-3"])
+     [ `Response of json | `Stream of json response Io.Stream.t ] response Io.t
+    [@warning "-3"])
   (** [execute schema ctx variables doc] evaluates the [doc] against [schema]
       with the given context [ctx] and [variables]. *)
 end
