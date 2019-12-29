@@ -6,6 +6,8 @@ module Field_error = struct
   let message_of_field_error t =
     match t with String s -> s | Extension _ -> ""
 
+  let of_string s = String s
+
   let extensions_of_field_error t =
     match t with
     | String _ -> None

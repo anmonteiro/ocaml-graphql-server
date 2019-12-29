@@ -22,6 +22,8 @@ end
 
 module Option = struct
   let map x ~f = match x with None -> None | Some y -> Some (f y)
+
+  let get_exn = function Some x -> x | None -> failwith "Option.get_exn"
 end
 
 (* IO *)
@@ -51,6 +53,8 @@ module type Field_error = sig
   type t
 
   val message_of_field_error : t -> string
+
+  val of_string : string -> t
 
   val extensions_of_field_error :
     t -> ((string * Yojson.Basic.json)[@warning "-3"]) list option
@@ -507,18 +511,6 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       }
         -> ('ctx, 'src) field
 
-  and _ directive =
-    | Directive : {
-        name : string;
-        doc : string option;
-        typ : ('ctx, 'out) typ;
-        locations : directive_location list;
-        args : ('a, 'args) Arg.arg_list;
-        resolve : resolve:(unit -> json response Io.t) -> 'args;
-        lift : 'a -> ('out, field_error) result Io.t;
-      }
-        -> 'ctx directive
-
   and (_, _) typ =
     | Object : ('ctx, 'src) obj -> ('ctx, 'src option) typ
     | List : ('ctx, 'src) typ -> ('ctx, 'src list option) typ
@@ -565,12 +557,56 @@ module Make (Io : IO) (Field_error : Field_error) = struct
 
   type ('ctx, 'a) abstract_typ = ('ctx, ('ctx, 'a) abstract_value option) typ
 
+  type (_, _) directive =
+    | Directive : {
+        name : string;
+        doc : string option;
+        src_typ : ('ctx, 'src) typ;
+        (* TODO: maybe src_lift *)
+        typ : ('ctx, 'out) typ;
+        locations : directive_location list;
+        args : ('a, 'args) Arg.arg_list;
+        resolve : resolve:(unit -> ('src, field_error) result Io.t) -> 'args;
+        lift : 'a -> ('out, field_error) result Io.t;
+      }
+        -> ('ctx, 'src) directive
+
+  (* type 'ctx json_directive = ('ctx, json response) directive *)
+
+  type 'ctx any_directive =
+    | AnyDirective : ('ctx, _) directive -> 'ctx any_directive
+
+  module Directives = struct
+    type ('ctx, _, _) directive_list =
+      | [] : ('ctx, 'a, 'a) directive_list
+      | ( :: ) :
+          ('ctx, 'a) directive * ('ctx, 'b, 'c) directive_list
+          -> ('ctx, 'b, 'a -> 'c) directive_list
+
+    type _ any_directive_list =
+      | Directives : ('ctx, _, _) directive_list -> 'ctx any_directive_list
+
+    let directives ds = Directives ds
+
+    let rec find :
+        type ctx a b.
+        (ctx any_directive -> bool) ->
+        (ctx, a, b) directive_list ->
+        ctx any_directive option =
+     fun f directives ->
+      match directives with
+      | [] -> None
+      | d :: rest ->
+          let wrapped = AnyDirective d in
+          if f wrapped then Some wrapped else find f rest
+  end
+
   type 'ctx schema = {
     query : ('ctx, unit) obj;
     mutation : ('ctx, unit) obj option;
     subscription : 'ctx subscription_obj option;
-    directives : 'ctx directive list;
-    mandatory_directives : 'ctx directive list;
+    directives : 'ctx Directives.any_directive_list;
+    mandatory_directives : ('ctx, unit) directive list;
   }
 
   (* Constructor functions *)
@@ -708,8 +744,14 @@ module Make (Io : IO) (Field_error : Field_error) = struct
     Scalar
       { name = "ID"; doc = None; coerce = (fun x -> `String x); tid = guid_id }
 
-  let directive ?doc name ~locations ~typ ~args ~resolve =
-    Directive { name; doc; args; resolve; typ; locations; lift = id }
+  let json_id = Tid.tid ()
+
+  let json : 'ctx. ('ctx, json option) typ =
+    Scalar { name = "json"; doc = None; coerce = (fun x -> x); tid = json_id }
+
+  let directive ?doc name ~locations ~src_typ ~out_typ ~args ~resolve =
+    Directive
+      { name; doc; args; resolve; src_typ; typ = out_typ; locations; lift = id }
 
   module Mandatory_directives = struct
     type should_include = Include | Skip
@@ -728,7 +770,13 @@ module Make (Io : IO) (Field_error : Field_error) = struct
           tid = should_include_id;
         }
 
-    let skip_directive : 'ctx. 'ctx directive =
+    let unit_tid = Tid.tid ()
+
+    let unit =
+      Scalar
+        { name = "Unit"; doc = None; coerce = (fun _ -> `Null); tid = unit_tid }
+
+    let skip_directive : 'ctx. ('ctx, 'src) directive =
       Directive
         {
           name = "skip";
@@ -737,6 +785,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
               "Directs the executor to skip this field or fragment when the \
                `if` argument is true.";
           locations = [ `Field; `Fragment_spread; `Inline_fragment ];
+          src_typ = NonNullable unit;
           typ = NonNullable should_include_enum;
           args =
             Arg.
@@ -752,7 +801,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
           lift = Io.ok;
         }
 
-    let include_directive : 'ctx. 'ctx directive =
+    let include_directive : 'ctx. ('ctx, 'src) directive =
       Directive
         {
           name = "include";
@@ -761,6 +810,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
               "Directs the executor to include this field or fragment only \
                when the `if` argument is true.";
           locations = [ `Field; `Fragment_spread; `Inline_fragment ];
+          src_typ = NonNullable unit;
           typ = NonNullable should_include_enum;
           args =
             Arg.
@@ -777,14 +827,9 @@ module Make (Io : IO) (Field_error : Field_error) = struct
         }
   end
 
-  let schema :
-        'ctx. ?directives:'ctx directive list -> ?mutation_name:string ->
-        ?mutations:('ctx, unit) field list -> ?subscription_name:string ->
-        ?subscriptions:'ctx subscription_field list -> ?query_name:string ->
-        ('ctx, unit) field list -> 'ctx schema =
-   fun ?(directives = []) ?(mutation_name = "mutation") ?mutations
-       ?(subscription_name = "subscription") ?subscriptions
-       ?(query_name = "query") fields ->
+  let schema ?directives ?(mutation_name = "mutation") ?mutations
+      ?(subscription_name = "subscription") ?subscriptions
+      ?(query_name = "query") fields =
     {
       query =
         {
@@ -806,7 +851,10 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       subscription =
         Option.map subscriptions ~f:(fun fields ->
             { name = subscription_name; doc = None; fields });
-      directives;
+      directives =
+        ( match directives with
+        | None -> Directives.(directives [])
+        | Some directives -> Directives.directives directives );
       mandatory_directives =
         Mandatory_directives.[ skip_directive; include_directive ];
     }
@@ -1482,11 +1530,14 @@ module Make (Io : IO) (Field_error : Field_error) = struct
             ];
         }
 
-    type any_directive = AnyDirective : _ directive -> any_directive
+    type any_introspection_directive =
+      | AnyIntrospectionDirective :
+          ('ctx, 'src) directive
+          -> any_introspection_directive
 
     let __directive_tid = Tid.tid ()
 
-    let __directive : 'ctx. ('ctx, any_directive option) typ =
+    let __directive : 'ctx. ('ctx, any_introspection_directive option) typ =
       Object
         {
           tid = __directive_tid;
@@ -1504,7 +1555,9 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = NonNullable string;
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ (AnyDirective (Directive d)) -> d.name);
+                    resolve =
+                      (fun _ (AnyIntrospectionDirective (Directive d)) ->
+                        d.name);
                   };
                 Field
                   {
@@ -1514,7 +1567,8 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = string;
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ (AnyDirective (Directive d)) -> d.doc);
+                    resolve =
+                      (fun _ (AnyIntrospectionDirective (Directive d)) -> d.doc);
                   };
                 Field
                   {
@@ -1525,7 +1579,8 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     args = Arg.[];
                     lift = Io.ok;
                     resolve =
-                      (fun _ (AnyDirective (Directive d)) -> d.locations);
+                      (fun _ (AnyIntrospectionDirective (Directive d)) ->
+                        d.locations);
                   };
                 Field
                   {
@@ -1536,7 +1591,7 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     args = Arg.[];
                     lift = Io.ok;
                     resolve =
-                      (fun _ (AnyDirective (Directive d)) ->
+                      (fun _ (AnyIntrospectionDirective (Directive d)) ->
                         args_to_list d.args);
                   };
               ];
@@ -1612,7 +1667,9 @@ module Make (Io : IO) (Field_error : Field_error) = struct
                     typ = NonNullable (List (NonNullable __directive));
                     args = Arg.[];
                     lift = Io.ok;
-                    resolve = (fun _ _ -> List.map (fun d -> AnyDirective d) []);
+                    resolve =
+                      (fun _ _ ->
+                        List.map (fun d -> AnyIntrospectionDirective d) []);
                   };
               ];
         }
@@ -1703,22 +1760,27 @@ module Make (Io : IO) (Field_error : Field_error) = struct
   let make_resolve_info { ctx; fragments; variables; _ } field =
     { ctx; field; fragments; variables }
 
-  let eval_directive :
-      type out args a.
-      variable_map ->
-      Graphql_parser.directive ->
-      (a, args) Arg.arg_list ->
-      resolver:args ->
-      lift:(a -> (out, field_error) result Io.t) ->
-      (out, string) result Io.t =
-   fun variables directive_field args ~resolver ~lift ->
-    match
-      Arg.eval_arglist variables ~field_type:"directive"
-        ~field_name:directive_field.name args directive_field.arguments resolver
-    with
-    | Ok unlifted_value ->
-        lift unlifted_value |> Io.Result.map_error ~f:(fun _ -> "")
-    | Error msg -> Io.error msg
+  let rec cast :
+      type ctx src out. (ctx, src) typ -> (ctx, out) typ -> src -> out option =
+   fun src_typ out_typ v ->
+    match (src_typ, out_typ) with
+    | NonNullable styp, NonNullable otyp -> (
+        match cast styp otyp (Some v) with Some x -> x | None -> None )
+    | NonNullable styp, otyp ->
+        (* Can still cast non-nullable to nullable, if the source type is
+         * non-null, but not the other way around! *)
+        cast styp otyp (Some v)
+    | List typ, List otyp ->
+        Option.map v ~f:(fun xs ->
+            Some (List.map (fun x -> Option.get_exn (cast typ otyp x)) xs))
+    | Scalar s1, Scalar s2 -> (
+        match Tid.eq s1.tid s2.tid with Some Teq -> Some v | None -> None )
+    | Enum e1, Enum e2 -> (
+        match Tid.eq e1.tid e2.tid with Some Teq -> Some v | None -> None )
+    | Object o1, Object o2 -> (
+        match Tid.eq o1.tid o2.tid with Some Teq -> Some v | None -> None )
+    | Abstract _, _ | _, Abstract _ -> assert false
+    | _ -> None
 
   let rec should_include_field :
       type ctx.
@@ -1727,25 +1789,6 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       (bool, string) result Io.t =
    fun ctx (directives : Graphql_parser.directive list) ->
     let open Io.Infix in
-    let eval directive_field (Directive { resolve; lift; typ; args; _ }) rest =
-      (* `@skip` / `@include` are special and never call `resolve` *)
-      let resolver = resolve ~resolve:(fun _ -> assert false) in
-      eval_directive ctx.variables directive_field args (* typ *) ~resolver
-        ~lift
-      >>=? fun include_skip ->
-      let open Mandatory_directives in
-      let ret =
-        match (typ, should_include_enum) with
-        | NonNullable (Enum e1), Enum e2 -> (
-            match Tid.eq e1.tid e2.tid with
-            | Some Teq -> (include_skip : should_include)
-            | _ -> Include )
-        | _ -> Include
-      in
-      match ret with
-      | Skip -> Io.ok false
-      | Include -> should_include_field ctx rest
-    in
     match directives with
     | [] -> Io.ok true
     | directive_field :: rest -> (
@@ -1754,7 +1797,29 @@ module Make (Io : IO) (Field_error : Field_error) = struct
             (fun (Directive { name; _ }) -> name = directive_field.name)
             ctx.schema.mandatory_directives
         with
-        | Some directive -> eval directive_field directive rest
+        | Some (Directive { resolve; lift; typ; args; _ }) -> (
+            (* `@skip` / `@include` are special and never call `resolve` *)
+            let resolver = resolve ~resolve:(fun () -> assert false) in
+            match
+              Arg.eval_arglist ctx.variables ~field_type:"directive"
+                ~field_name:directive_field.name args directive_field.arguments
+                resolver
+            with
+            | Ok unlifted_value -> (
+                lift unlifted_value |> Io.Result.map_error ~f:(fun _ -> "TODO")
+                >>=? fun include_skip ->
+                let ret =
+                  match
+                    cast typ Mandatory_directives.should_include_enum
+                      include_skip
+                  with
+                  | Some (Some should_include) -> should_include
+                  | _ -> Include
+                in
+                match ret with
+                | Skip -> Io.ok false
+                | Include -> should_include_field ctx rest )
+            | Error msg -> Io.error msg )
         | None -> should_include_field ctx rest )
 
   let alias_or_name : Graphql_parser.field -> string =
@@ -1829,9 +1894,11 @@ module Make (Io : IO) (Field_error : Field_error) = struct
 
   let directive_from_name (* : 'ctx schema -> string -> 'ctx directive option *)
       schema directive_name =
-    List.find
-      (fun (Directive directive) -> directive.name = directive_name)
-      schema.directives
+    let (Directives directives) = schema.directives in
+    Directives.find
+      (fun (AnyDirective (Directive directive)) ->
+        directive.name = directive_name)
+      directives
 
   let coerce_or_null :
       'a option ->
@@ -1878,6 +1945,22 @@ module Make (Io : IO) (Field_error : Field_error) = struct
         let extensions = Field_error.extensions_of_field_error field_error in
         let msg = Field_error.message_of_field_error field_error in
         Error (error_response ~data:`Null ~path ?extensions msg)
+
+  let rec string_of_typ : type ctx src. (ctx, src) typ -> string = function
+    | Scalar a -> a.name
+    | Object a -> a.name
+    | Enum a -> a.name
+    | List a -> Printf.sprintf "[%s]" (string_of_typ a)
+    | NonNullable a -> Printf.sprintf "%s!" (string_of_typ a)
+    | Abstract { name; _ } -> name
+
+  let eval_directive_error ~directive_name ~field_name field_out_typ
+      directive_src_typ =
+    Printf.sprintf
+      "Directive `@%s` on field `%s` expected input of type `%s`, found `%s`."
+      directive_name field_name
+      (string_of_typ directive_src_typ)
+      (string_of_typ field_out_typ)
 
   let rec present :
       type ctx src.
@@ -1959,72 +2042,143 @@ module Make (Io : IO) (Field_error : Field_error) = struct
       path ->
       (json * error list, [> resolve_error ]) result Io.t =
    fun ctx ?(execution_order = Parallel) src obj fields path ->
-    let really_resolve_field (query_field : Graphql_parser.field) =
+    let open Io.Infix in
+    let rec resolve_directives :
+        type out.
+        Graphql_parser.directive list ->
+        (ctx, src) field ->
+        (ctx, out) directive ->
+        Graphql_parser.field ->
+        (out, field_error) result Io.t =
+     fun directives (Field f as field) (Directive d) query_field ->
+      match directives with
+      | [] -> (
+          (* If there are no directives, evaluate the field. *)
+          let resolver = f.resolve (make_resolve_info ctx query_field) src in
+          match
+            Arg.eval_arglist ctx.variables ~field_name:f.name f.args
+              query_field.arguments resolver
+          with
+          | Ok unlifted_value -> (
+              f.lift unlifted_value >>=? fun lifted_value ->
+              match cast f.typ d.src_typ lifted_value with
+              | Some x -> Io.ok x
+              | None ->
+                  (* The directive's src_typ doesn't equal the
+                   * field's `out` typ *)
+                  Io.error
+                    (Field_error.of_string
+                       (eval_directive_error ~directive_name:d.name
+                          ~field_name:f.name f.typ d.src_typ)) )
+          | Error err -> Io.error (Field_error.of_string err) )
+      | { Graphql_parser.name = directive_name; arguments; _ } :: rest -> (
+          (* The multiple directive case needs to collapse the directive
+           * tower, and return the result of resolving the field. *)
+          match directive_from_name ctx.schema directive_name with
+          | Some (AnyDirective (Directive d2 as directive2)) -> (
+              let resolver =
+                d2.resolve ~resolve:(fun () ->
+                    resolve_directives rest field directive2 query_field
+                    (* >>= function
+                    | Ok out -> (
+                        match cast_to_directive out_typ directive out with
+                        | Some x -> Io.ok x
+                        | None ->
+                            (* The directive's src_typ doesn't equal the
+                             * field's `out` typ *)
+                            Io.error
+                              (Field_error.of_string
+                                 (eval_directive_error ~directive_name:d.name
+                                    ~field_name:f.name out_typ d.src_typ)) )
+                    | Error err -> Io.error err *))
+              in
+              match
+                Arg.eval_arglist ctx.variables ~field_type:"directive"
+                  ~field_name:d2.name d2.args arguments resolver
+              with
+              | Ok unlifted_value -> (
+                  d2.lift unlifted_value >>=? fun lifted_value ->
+                  match cast d2.typ d.src_typ lifted_value with
+                  | Some x -> Io.ok x
+                  | None ->
+                      (* The directive's src_typ doesn't equal the
+                       * field's `out` typ *)
+                      Io.error
+                        (Field_error.of_string
+                           (eval_directive_error ~directive_name:d.name
+                              ~field_name:f.name d2.typ d.src_typ)) )
+              | Error err -> Io.error (Field_error.of_string err) )
+          | None ->
+              let err = Format.sprintf "Unknown directive: %s" directive_name in
+              Io.error (Field_error.of_string err) )
+    in
+
+    let resolve_field_or_directives field
+        (directives : Graphql_parser.directive list) query_field =
+      match directives with
+      | [] -> resolve_field ctx src query_field field path
+      | { Graphql_parser.name = directive_name; arguments; _ } :: rest -> (
+          match directive_from_name ctx.schema directive_name with
+          | Some (AnyDirective (Directive d as directive)) -> (
+              let name = alias_or_name query_field in
+              let path' = `String name :: path in
+              let resolver =
+                d.resolve ~resolve:(fun () ->
+                    resolve_directives rest field directive query_field)
+              in
+              match
+                Arg.eval_arglist ctx.variables ~field_type:"directive"
+                  ~field_name:d.name d.args arguments resolver
+              with
+              | Ok unlifted_value -> (
+                  let lifted_value =
+                    d.lift unlifted_value
+                    |> Io.Result.map_error ~f:(fun err ->
+                           `Resolve_error (err, path'))
+                    >>=? fun resolved ->
+                    present ctx resolved query_field d.typ path'
+                  in
+                  lifted_value >>| function
+                  | Ok (value, errors) -> Ok ((name, value), errors)
+                  | (Error (`Argument_error _) | Error (`Validation_error _)) as
+                    error ->
+                      error
+                  | Error (`Resolve_error err) as error -> (
+                      match d.typ with
+                      | NonNullable _ -> error
+                      | _ -> Ok ((name, `Null), [ err ]) ) )
+              | Error err -> Io.error (`Argument_error err) )
+          | None ->
+              let err = Format.sprintf "Unknown directive: %s" directive_name in
+              (* TODO: should this be a resolve error? *)
+              Io.error (`Argument_error err) )
+    in
+
+    let resolve_field (query_field : Graphql_parser.field) =
       let name = alias_or_name query_field in
       if query_field.name = "__typename" then
+        (* TODO: support directives for `__typename` *)
         Io.ok ((name, `String obj.name), [])
       else
         match field_from_object obj query_field.name with
-        | Some field -> resolve_field ctx src query_field field path
+        | Some field ->
+            (* skip / include are evaluated a collection time *)
+            let unevaluated_directives =
+              List.filter
+                (fun (directive : Graphql_parser.directive) ->
+                  not
+                    (List.exists
+                       (fun (Directive { name; _ }) -> name = directive.name)
+                       ctx.schema.mandatory_directives))
+                query_field.directives
+            in
+            resolve_field_or_directives field unevaluated_directives query_field
         | None ->
             let err =
               Printf.sprintf "Field '%s' is not defined on type '%s'"
                 query_field.name obj.name
             in
             Io.error (`Validation_error err)
-    in
-    let resolve_field (query_field : Graphql_parser.field) =
-      let open Io.Infix in
-      let rec inner (directives : Graphql_parser.directive list) =
-        match directives with
-        | [] -> really_resolve_field query_field
-        | { Graphql_parser.name = directive_name; arguments; _ } :: rest -> (
-            match directive_from_name ctx.schema directive_name with
-            | Some (Directive ({ args; resolve; _ } as directive)) -> (
-                let name = alias_or_name query_field in
-                let path' = `String name :: path in
-                let resolver =
-                  resolve ~resolve:(fun () ->
-                      inner rest >>= function
-                      | Ok ((_name, res), _errors) -> Io.ok res
-                      | Error _ as err -> Io.return (to_response err))
-                in
-                match
-                  Arg.eval_arglist ctx.variables ~field_type:"directive"
-                    ~field_name:name args arguments resolver
-                with
-                | Ok unlifted_value -> (
-                    let lifted_value =
-                      directive.lift unlifted_value
-                      |> Io.Result.map_error ~f:(fun err ->
-                             `Resolve_error (err, path'))
-                      >>=? fun resolved ->
-                      present ctx resolved query_field directive.typ path'
-                    in
-                    lifted_value >>| function
-                    | Ok (value, errors) -> Ok ((name, value), errors)
-                    | (Error (`Argument_error _) | Error (`Validation_error _))
-                      as error ->
-                        error
-                    | Error (`Resolve_error err) as error -> (
-                        match directive.typ with
-                        | NonNullable _ -> error
-                        | _ -> Ok ((name, `Null), [ err ]) ) )
-                | Error err -> Io.error (`Argument_error err) )
-            | None ->
-                let err =
-                  Format.sprintf "Unknown directive: %s" directive_name
-                in
-                Io.return (Error (`Argument_error err)) )
-      in
-      inner
-        (List.filter
-           (fun (directive : Graphql_parser.directive) ->
-             not
-               (List.exists
-                  (fun (Directive { name; _ }) -> name = directive.name)
-                  ctx.schema.mandatory_directives))
-           query_field.directives)
     in
     map_fields_with_order execution_order resolve_field fields
     |> Io.map ~f:List.Result.join

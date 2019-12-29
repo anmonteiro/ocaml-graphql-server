@@ -86,18 +86,36 @@ let schema =
         [
           directive "upperCase" ~locations:[ `Field ]
             ~args:Arg.[]
-            ~typ:(non_null string)
+            ~src_typ:(non_null string) ~out_typ:(non_null string)
+            ~resolve:(fun ~resolve ->
+              match resolve () with
+              | Ok x -> Ok (String.uppercase_ascii x)
+              | Error err -> Error err);
+          directive "return42" ~locations:[ `Field ]
+            ~args:Arg.[]
+            ~src_typ:(non_null string) ~out_typ:(non_null int)
+            ~resolve:(fun ~resolve ->
+              match resolve () with Ok _ -> Ok 42 | Error err -> Error err);
+          directive "any_typ" ~locations:[ `Field ]
+            ~args:Arg.[]
+            ~src_typ:(non_null json) ~out_typ:(non_null string)
             ~resolve:(fun ~resolve ->
               match resolve () with
               | Ok (`String x) -> Ok (String.uppercase_ascii x)
               | Ok _ -> Error "not string"
-              | Error _err -> Error "");
-          directive "neg" ~locations:[ `Field ]
+              | Error err -> Error err);
+          directive "takesalist" ~locations:[ `Field ]
+            ~args:Arg.[]
+            ~src_typ:(non_null (list (non_null user)))
+            ~out_typ:(non_null (list (non_null user)))
+            ~resolve:(fun ~resolve ->
+              match resolve () with Ok xs -> Ok xs | Error err -> Error err);
+          (* directive "neg" ~locations:[ `Field ]
             ~args:Arg.[]
             ~typ:(non_null int)
             ~resolve:(fun ~resolve ->
               match resolve () with
               | Ok (`Int x) -> Ok (-x)
               | Ok _ -> Error "not int"
-              | Error _err -> Error "");
+              | Error _err -> Error ""); *)
         ])

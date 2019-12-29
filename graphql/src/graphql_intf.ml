@@ -26,6 +26,8 @@ module type Field_error = sig
 
   val message_of_field_error : t -> string
 
+  val of_string : string -> t
+
   val extensions_of_field_error :
     t -> ((string * Yojson.Basic.json)[@warning "-3"]) list option
 end
@@ -68,12 +70,22 @@ module type Schema = sig
 
   type 'a enum_value
 
-  type 'ctx directive
+  type ('ctx, 'src) directive
 
   (** {3 Constructors } *)
+  module Directives : sig
+    type ('ctx, _, _) directive_list =
+      | [] : ('ctx, 'a, 'a) directive_list
+      | ( :: ) :
+          ('ctx, 'a) directive * ('ctx, 'b, 'c) directive_list
+          -> ('ctx, 'b, 'a -> 'c) directive_list
+
+    type _ any_directive_list =
+      | Directives : ('ctx, _, _) directive_list -> 'ctx any_directive_list
+  end
 
   val schema :
-    ?directives:'ctx directive list ->
+    ?directives:('ctx, 'b, 'c) Directives.directive_list ->
     ?mutation_name:string ->
     ?mutations:('ctx, unit) field list ->
     ?subscription_name:string ->
@@ -226,10 +238,11 @@ module type Schema = sig
     ?doc:string ->
     string ->
     locations:directive_location list ->
-    typ:('ctx, 'a) typ ->
+    src_typ:('ctx, 'src) typ ->
+    out_typ:('ctx, 'a) typ ->
     args:(('a, field_error) result Io.t, 'b) Arg.arg_list ->
-    resolve:(resolve:(unit -> json response Io.t) -> 'b) ->
-    'ctx directive
+    resolve:(resolve:(unit -> ('src, field_error) result Io.t) -> 'b) ->
+    ('ctx, 'src) directive
 
   (** {3 Built-in scalars} *)
 
@@ -238,6 +251,8 @@ module type Schema = sig
   val string : ('ctx, string option) typ
 
   val guid : ('ctx, string option) typ
+
+  val json : ('ctx, json option) typ
 
   val bool : ('ctx, bool option) typ
 

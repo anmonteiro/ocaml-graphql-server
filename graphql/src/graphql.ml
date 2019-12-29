@@ -22,5 +22,7 @@ module Schema =
 
       let message_of_field_error t = t
 
+      let of_string t = t
+
       let extensions_of_field_error _t = None
     end)

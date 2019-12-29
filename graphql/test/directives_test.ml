@@ -157,4 +157,42 @@ let suite =
                         ] );
                   ] );
             ]) );
+    ( "multiple directives",
+      `Quick,
+      fun () ->
+        let query = "{ users { name @return42 @upperCase  } }" in
+        test_query query
+          (`Assoc
+            [
+              ( "data",
+                `Assoc
+                  [
+                    ( "users",
+                      `List
+                        [
+                          `Assoc [ ("name", `String "E") ];
+                          `Assoc [ ("name", `String "B") ];
+                          (* `Assoc [ ("name", `String "CHARLIE") ]; *)
+                        ] );
+                  ] );
+            ]) );
+    ( "custom directive that takes a list",
+      `Quick,
+      fun () ->
+        let query = "{ users @takesalist { name  } }" in
+        test_query query
+          (`Assoc
+            [
+              ( "data",
+                `Assoc
+                  [
+                    ( "users",
+                      `List
+                        [
+                          `Assoc [ ("name", `String "Alice") ];
+                          `Assoc [ ("name", `String "Bob") ];
+                          (* `Assoc [ ("name", `String "CHARLIE") ]; *)
+                        ] );
+                  ] );
+            ]) );
   ]
